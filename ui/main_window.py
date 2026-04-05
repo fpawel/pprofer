@@ -94,21 +94,39 @@ class SeriesLegendWidget(QtWidgets.QWidget):
         checkbox.deleteLater()
 
     def refresh_visible_series(self):
-        if self.plot_widget.freeze_series:
-            allowed = set(self.plot_widget.data.keys())
+        if self.plot_widget.show_all_series:
+            keys = list(self.plot_widget.data.keys())
         else:
-            allowed = set(self.plot_widget.visible_series_keys())
+            keys = list(self.plot_widget.visible_series_keys())
 
-        # Убедиться, что для всех allowed серий есть чекбокс
-        for key in allowed:
+        # сортировка по "горячести" (последнее значение)
+        def last_value(k):
+            points = self.plot_widget.data.get(k)
+            if not points:
+                return 0
+            return points[-1][1]
+
+        keys.sort(key=last_value, reverse=True)
+
+        # создать недостающие чекбоксы
+        for key in keys:
             self.ensure_series(key)
 
-        # Показать только нужные
-        for key, checkbox in self.checkboxes.items():
-            checkbox.setVisible(key in allowed)
+        # переупорядочить layout
+        for i, key in enumerate(keys):
+            cb = self.checkboxes.get(key)
+            if cb:
+                self.content_layout.removeWidget(cb)
+                self.content_layout.insertWidget(i, cb)
+                cb.setVisible(True)
+
+        # скрыть лишние
+        for key, cb in self.checkboxes.items():
+            if key not in keys:
+                cb.setVisible(False)
 
     def show_all(self):
-        if self.plot_widget.freeze_series:
+        if self.plot_widget.show_all_series:
             target_keys = self.plot_widget.data.keys()
         else:
             target_keys = self.plot_widget.visible_series_keys()
@@ -125,7 +143,7 @@ class SeriesLegendWidget(QtWidgets.QWidget):
             self.plot_widget.set_series_visible(key, True)
 
     def hide_all(self):
-        if self.plot_widget.freeze_series:
+        if self.plot_widget.show_all_series:
             target_keys = self.plot_widget.data.keys()
         else:
             target_keys = self.plot_widget.visible_series_keys()
@@ -159,6 +177,9 @@ class ProfileTab(QtWidgets.QWidget):
         self.view_all_button = QtWidgets.QPushButton("View all")
         controls_layout.addWidget(self.view_all_button)
 
+        self.top_n_button = QtWidgets.QPushButton("Top 10")
+        controls_layout.addWidget(self.top_n_button)
+
         controls_layout.addStretch()
         layout.addLayout(controls_layout)
 
@@ -184,12 +205,16 @@ class ProfileTab(QtWidgets.QWidget):
 
         self.follow_live_checkbox.toggled.connect(self.plot.set_follow_live)
         self.view_all_button.clicked.connect(self.plot.view_all)
+        self.top_n_button.clicked.connect(self.on_show_top_n)
         self.plot.manual_view_activated.connect(self._on_manual_view_activated)
 
     def _on_manual_view_activated(self):
         self.follow_live_checkbox.blockSignals(True)
         self.follow_live_checkbox.setChecked(False)
         self.follow_live_checkbox.blockSignals(False)
+
+    def on_show_top_n(self):
+        self.plot.show_top_n()
 
 
 class MainWindow(QtWidgets.QMainWindow):

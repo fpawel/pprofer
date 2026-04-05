@@ -43,10 +43,7 @@ class HumanAxis(pg.AxisItem):
         return [self.format_value(v) for v in values]
 
     def format_value(self, v):
-        if self.log_scale:
-            real_value = 10 ** v
-        else:
-            real_value = v
+        real_value = 10 ** v if self.log_scale else v
 
         if real_value <= 0:
             return "0"
@@ -97,8 +94,9 @@ class PlotWidget(pg.PlotWidget):
         self.max_visible_series = max_visible_series
         self.view_seconds = view_seconds
         self.min_x_padding_seconds = 1.0
+
         self.follow_live = True
-        self.freeze_series = False
+        self.show_all_series = False
         self.log_y = log_y
         self._ignore_manual_range_signal = False
 
@@ -117,12 +115,12 @@ class PlotWidget(pg.PlotWidget):
         left_axis.setPen(pg.mkPen("k"))
         bottom_axis.setPen(pg.mkPen("k"))
 
-        self.data = defaultdict(list)          # key -> [(ts, value), ...]
-        self.curves = {}                       # key -> PlotDataItem
-        self.series_colors = {}                # key -> color
-        self.series_visible = {}               # key -> bool
-        self.series_names = {}                 # key -> display name
-        self.active_keys = set()               # currently shown keys
+        self.data = defaultdict(list)
+        self.curves = {}
+        self.series_colors = {}
+        self.series_visible = {}
+        self.series_names = {}
+        self.active_keys = set()
 
         vb = self.getViewBox()
         vb.sigRangeChangedManually.connect(self._on_manual_range_changed)
@@ -137,8 +135,16 @@ class PlotWidget(pg.PlotWidget):
     def set_follow_live(self, enabled: bool):
         self.follow_live = enabled
         if enabled:
-            self.freeze_series = False
+            self.show_all_series = False
             self.update_x_range()
+
+    def set_show_all_series(self, enabled: bool):
+        self.show_all_series = enabled
+
+    def show_top_n(self):
+        self.follow_live = False
+        self.show_all_series = False
+        self.manual_view_activated.emit()
 
     def color_for_key(self, key):
         if key not in self.series_colors:
@@ -248,7 +254,7 @@ class PlotWidget(pg.PlotWidget):
 
     def view_all(self):
         self.follow_live = False
-        self.freeze_series = True
+        self.show_all_series = True
         self.manual_view_activated.emit()
 
         min_x = None
@@ -256,8 +262,14 @@ class PlotWidget(pg.PlotWidget):
         min_y = None
         max_y = None
 
-        # ничего не менять в active_keys!
-        # работаем только с текущими top-N
+        all_keys = list(self.data.keys())
+
+        for key in all_keys:
+            if key not in self.curves:
+                self._create_curve(key)
+                self.series_added.emit(key)
+
+        self.active_keys = set(all_keys)
 
         for key in self.active_keys:
             if not self.series_visible.get(key, True):
@@ -312,7 +324,7 @@ class PlotWidget(pg.PlotWidget):
             self._ignore_manual_range_signal = False
 
     def refresh(self, _now):
-        if self.freeze_series:
+        if self.show_all_series:
             new_active_keys = set(self.data.keys())
         else:
             new_active_keys = set(self.top_series_keys())
