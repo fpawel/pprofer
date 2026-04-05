@@ -94,11 +94,28 @@ class SeriesLegendWidget(QtWidgets.QWidget):
         checkbox.deleteLater()
 
     def refresh_visible_series(self):
-        allowed = set(self.plot_widget.visible_series_keys())
+        if self.plot_widget.freeze_series:
+            allowed = set(self.plot_widget.data.keys())
+        else:
+            allowed = set(self.plot_widget.visible_series_keys())
+
+        # Убедиться, что для всех allowed серий есть чекбокс
+        for key in allowed:
+            self.ensure_series(key)
+
+        # Показать только нужные
         for key, checkbox in self.checkboxes.items():
             checkbox.setVisible(key in allowed)
 
     def show_all(self):
+        if self.plot_widget.freeze_series:
+            target_keys = self.plot_widget.data.keys()
+        else:
+            target_keys = self.plot_widget.visible_series_keys()
+
+        for key in target_keys:
+            self.ensure_series(key)
+
         for key, checkbox in self.checkboxes.items():
             if not checkbox.isVisible():
                 continue
@@ -108,6 +125,14 @@ class SeriesLegendWidget(QtWidgets.QWidget):
             self.plot_widget.set_series_visible(key, True)
 
     def hide_all(self):
+        if self.plot_widget.freeze_series:
+            target_keys = self.plot_widget.data.keys()
+        else:
+            target_keys = self.plot_widget.visible_series_keys()
+
+        for key in target_keys:
+            self.ensure_series(key)
+
         for key, checkbox in self.checkboxes.items():
             if not checkbox.isVisible():
                 continue

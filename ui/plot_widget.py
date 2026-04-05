@@ -1,10 +1,10 @@
 import datetime
+import math
 from collections import defaultdict
 
 import humanize
 import pyqtgraph as pg
 from PyQt5 import QtCore
-import math
 
 
 SERIES_COLORS = [
@@ -98,6 +98,7 @@ class PlotWidget(pg.PlotWidget):
         self.view_seconds = view_seconds
         self.min_x_padding_seconds = 1.0
         self.follow_live = True
+        self.freeze_series = False
         self.log_y = log_y
         self._ignore_manual_range_signal = False
 
@@ -121,7 +122,7 @@ class PlotWidget(pg.PlotWidget):
         self.series_colors = {}                # key -> color
         self.series_visible = {}               # key -> bool
         self.series_names = {}                 # key -> display name
-        self.active_keys = set()               # top-N keys currently shown
+        self.active_keys = set()               # currently shown keys
 
         vb = self.getViewBox()
         vb.sigRangeChangedManually.connect(self._on_manual_range_changed)
@@ -136,6 +137,7 @@ class PlotWidget(pg.PlotWidget):
     def set_follow_live(self, enabled: bool):
         self.follow_live = enabled
         if enabled:
+            self.freeze_series = False
             self.update_x_range()
 
     def color_for_key(self, key):
@@ -246,12 +248,16 @@ class PlotWidget(pg.PlotWidget):
 
     def view_all(self):
         self.follow_live = False
+        self.freeze_series = True
         self.manual_view_activated.emit()
 
         min_x = None
         max_x = None
         min_y = None
         max_y = None
+
+        # ничего не менять в active_keys!
+        # работаем только с текущими top-N
 
         for key in self.active_keys:
             if not self.series_visible.get(key, True):
@@ -262,11 +268,7 @@ class PlotWidget(pg.PlotWidget):
                 continue
 
             xs = [t for t, _ in points]
-
-            if self.log_y:
-                ys = [max(v, 1) for _, v in points]
-            else:
-                ys = [v for _, v in points]
+            ys = [max(v, 1) if self.log_y else v for _, v in points]
 
             x1, x2 = min(xs), max(xs)
             y1, y2 = min(ys), max(ys)
@@ -310,7 +312,10 @@ class PlotWidget(pg.PlotWidget):
             self._ignore_manual_range_signal = False
 
     def refresh(self, _now):
-        new_active_keys = set(self.top_series_keys())
+        if self.freeze_series:
+            new_active_keys = set(self.data.keys())
+        else:
+            new_active_keys = set(self.top_series_keys())
 
         removed_keys = self.active_keys - new_active_keys
         for key in removed_keys:
@@ -331,10 +336,7 @@ class PlotWidget(pg.PlotWidget):
                 continue
 
             xs = [t for t, _ in points]
-            if self.log_y:
-                ys = [max(v, 1) for _, v in points]
-            else:
-                ys = [v for _, v in points]
+            ys = [max(v, 1) if self.log_y else v for _, v in points]
 
             curve.setData(xs, ys)
 
