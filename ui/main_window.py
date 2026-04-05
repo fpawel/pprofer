@@ -15,7 +15,17 @@ PROFILES = [
     "threadcreate",
 ]
 
-BYTES_PROFILES = {"heap", "allocs"}
+PROFILE_MODE = {
+    "heap": "bytes",
+    "allocs": "bytes",
+    "goroutine": "count",
+    "threadcreate": "count",
+    "profile": "duration_ns",
+    "block": "duration_ns",
+    "mutex": "duration_ns",
+}
+
+LOG_SCALE_PROFILES = {"heap", "allocs", "profile", "block", "mutex"}
 
 
 class SeriesLegendWidget(QtWidgets.QWidget):
@@ -63,8 +73,12 @@ class SeriesLegendWidget(QtWidgets.QWidget):
         if key in self.checkboxes:
             return
 
-        checkbox = QtWidgets.QCheckBox(key)
+        name = self.plot_widget.series_names.get(key, key)
+        color = self.plot_widget.color_for_key(key)
+
+        checkbox = QtWidgets.QCheckBox(name)
         checkbox.setChecked(self.plot_widget.series_visible.get(key, True))
+        checkbox.setStyleSheet(f"color: {color};")
         checkbox.toggled.connect(
             lambda checked, series_key=key: self.plot_widget.set_series_visible(series_key, checked)
         )
@@ -131,6 +145,7 @@ class ProfileTab(QtWidgets.QWidget):
             mode=mode,
             max_visible_series=max_visible_series,
             view_seconds=view_seconds,
+            log_y=profile_name in LOG_SCALE_PROFILES,
         )
         splitter.addWidget(self.plot)
 
@@ -193,11 +208,9 @@ class MainWindow(QtWidgets.QMainWindow):
         }
 
         for profile in PROFILES:
-            mode = "bytes" if profile in BYTES_PROFILES else "count"
-
             tab = ProfileTab(
                 profile_name=profile,
-                mode=mode,
+                mode=PROFILE_MODE[profile],
                 max_visible_series=max_visible_by_profile[profile],
                 view_seconds=view_seconds_by_profile[profile],
             )
@@ -213,10 +226,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self.timer.start(1000)
 
     def on_event(self, ev):
-        key = f"{ev['line']}|{ev.get('inline', '')}"
         plot = self.plots.get(ev["_type"])
-        if plot is not None:
-            plot.add_point(key, ev["_ts"], ev["flat"])
+        if plot is None:
+            return
+
+        key = f"{ev['line']}|{ev.get('inline', '')}"
+
+        display_name = ev["func"]
+        if ev.get("inline"):
+            display_name += " (inl)"
+
+        plot.add_point(
+            key=key,
+            ts=ev["_ts"],
+            value=ev["flat"],
+            display_name=display_name,
+        )
 
     def refresh(self):
         now = time.time()

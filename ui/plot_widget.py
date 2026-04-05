@@ -4,6 +4,7 @@ from collections import defaultdict
 import humanize
 import pyqtgraph as pg
 from PyQt5 import QtCore
+import math
 
 
 SERIES_COLORS = [
@@ -33,19 +34,45 @@ class TimeAxis(pg.AxisItem):
 
 
 class HumanAxis(pg.AxisItem):
-    def __init__(self, orientation, mode="bytes"):
+    def __init__(self, orientation, mode="bytes", log_scale=False):
         super().__init__(orientation=orientation)
         self.mode = mode
+        self.log_scale = log_scale
 
     def tickStrings(self, values, scale, spacing):
         return [self.format_value(v) for v in values]
 
     def format_value(self, v):
+        if self.log_scale:
+            real_value = 10 ** v
+        else:
+            real_value = v
+
+        if real_value <= 0:
+            return "0"
+
         if self.mode == "bytes":
-            return humanize.naturalsize(v, binary=True)
+            return humanize.naturalsize(real_value, binary=True)
+
         if self.mode == "count":
-            return str(int(v))
-        return ""
+            return str(int(real_value))
+
+        if self.mode == "duration_ns":
+            return self.format_duration_ns(real_value)
+
+        return str(real_value)
+
+    @staticmethod
+    def format_duration_ns(ns):
+        ns = float(ns)
+
+        if ns >= 1_000_000_000:
+            return f"{ns / 1_000_000_000:.2f} s"
+        if ns >= 1_000_000:
+            return f"{ns / 1_000_000:.2f} ms"
+        if ns >= 1_000:
+            return f"{ns / 1_000:.2f} µs"
+        return f"{int(ns)} ns"
 
 
 class PlotWidget(pg.PlotWidget):
@@ -53,9 +80,16 @@ class PlotWidget(pg.PlotWidget):
     series_removed = QtCore.pyqtSignal(str)
     manual_view_activated = QtCore.pyqtSignal()
 
-    def __init__(self, title, mode="bytes", max_visible_series=10, view_seconds=300):
+    def __init__(
+        self,
+        title,
+        mode="bytes",
+        max_visible_series=10,
+        view_seconds=300,
+        log_y=False,
+    ):
         axis = {
-            "left": HumanAxis(orientation="left", mode=mode),
+            "left": HumanAxis(orientation="left", mode=mode, log_scale=log_y),
             "bottom": TimeAxis(orientation="bottom"),
         }
         super().__init__(axisItems=axis)
@@ -64,12 +98,16 @@ class PlotWidget(pg.PlotWidget):
         self.view_seconds = view_seconds
         self.min_x_padding_seconds = 1.0
         self.follow_live = True
+        self.log_y = log_y
         self._ignore_manual_range_signal = False
 
         self.setBackground("w")
         self.setMinimumHeight(420)
         self.showGrid(x=True, y=True, alpha=0.2)
         self.setTitle(title, color="k", size="14pt")
+
+        if self.log_y:
+            self.setLogMode(y=True)
 
         left_axis = self.getAxis("left")
         bottom_axis = self.getAxis("bottom")
@@ -78,11 +116,12 @@ class PlotWidget(pg.PlotWidget):
         left_axis.setPen(pg.mkPen("k"))
         bottom_axis.setPen(pg.mkPen("k"))
 
-        self.data = defaultdict(list)
-        self.curves = {}
-        self.series_colors = {}
-        self.series_visible = {}
-        self.active_keys = set()
+        self.data = defaultdict(list)          # key -> [(ts, value), ...]
+        self.curves = {}                       # key -> PlotDataItem
+        self.series_colors = {}                # key -> color
+        self.series_visible = {}               # key -> bool
+        self.series_names = {}                 # key -> display name
+        self.active_keys = set()               # top-N keys currently shown
 
         vb = self.getViewBox()
         vb.sigRangeChangedManually.connect(self._on_manual_range_changed)
@@ -105,10 +144,12 @@ class PlotWidget(pg.PlotWidget):
             self.series_colors[key] = SERIES_COLORS[idx]
         return self.series_colors[key]
 
-    def add_point(self, key, ts, value):
+    def add_point(self, key, ts, value, display_name=None):
         self.data[key].append((ts, value))
         if key not in self.series_visible:
             self.series_visible[key] = True
+        if display_name:
+            self.series_names[key] = display_name
 
     def set_series_visible(self, key, visible):
         self.series_visible[key] = visible
@@ -134,8 +175,10 @@ class PlotWidget(pg.PlotWidget):
     def _create_curve(self, key):
         color = self.color_for_key(key)
         pen = pg.mkPen(color=color, width=2)
+        name = self.series_names.get(key, key)
+
         curve = self.plot(
-            name=key,
+            name=name,
             pen=pen,
             symbol="o",
             symbolSize=5,
@@ -202,6 +245,9 @@ class PlotWidget(pg.PlotWidget):
             self._ignore_manual_range_signal = False
 
     def view_all(self):
+        self.follow_live = False
+        self.manual_view_activated.emit()
+
         min_x = None
         max_x = None
         min_y = None
@@ -216,7 +262,11 @@ class PlotWidget(pg.PlotWidget):
                 continue
 
             xs = [t for t, _ in points]
-            ys = [v for _, v in points]
+
+            if self.log_y:
+                ys = [max(v, 1) for _, v in points]
+            else:
+                ys = [v for _, v in points]
 
             x1, x2 = min(xs), max(xs)
             y1, y2 = min(ys), max(ys)
@@ -226,25 +276,36 @@ class PlotWidget(pg.PlotWidget):
             min_y = y1 if min_y is None else min(min_y, y1)
             max_y = y2 if max_y is None else max(max_y, y2)
 
-        if min_x is None or max_x is None:
+        if min_x is None or max_x is None or min_y is None or max_y is None:
             return
 
         if min_x == max_x:
             min_x -= self.min_x_padding_seconds
             max_x += self.min_x_padding_seconds
 
-        if min_y is None or max_y is None:
-            return
-
-        if min_y == max_y:
-            delta = max(abs(min_y) * 0.05, 1.0)
-            min_y -= delta
-            max_y += delta
-
         self._ignore_manual_range_signal = True
         try:
             self.setXRange(min_x, max_x, padding=0.02)
-            self.setYRange(min_y, max_y, padding=0.05)
+
+            if self.log_y:
+                min_y = max(min_y, 1)
+                max_y = max(max_y, min_y * 1.01)
+
+                log_min_y = math.log10(min_y)
+                log_max_y = math.log10(max_y)
+
+                if log_min_y == log_max_y:
+                    log_min_y -= 0.1
+                    log_max_y += 0.1
+
+                self.setYRange(log_min_y, log_max_y, padding=0.05)
+            else:
+                if min_y == max_y:
+                    delta = max(abs(min_y) * 0.05, 1.0)
+                    min_y -= delta
+                    max_y += delta
+
+                self.setYRange(min_y, max_y, padding=0.05)
         finally:
             self._ignore_manual_range_signal = False
 
@@ -270,11 +331,16 @@ class PlotWidget(pg.PlotWidget):
                 continue
 
             xs = [t for t, _ in points]
-            ys = [v for _, v in points]
+            if self.log_y:
+                ys = [max(v, 1) for _, v in points]
+            else:
+                ys = [v for _, v in points]
+
             curve.setData(xs, ys)
 
             visible = self.series_visible.get(key, True)
             curve.setVisible(visible)
 
         self.update_x_range()
-        self.getViewBox().enableAutoRange(axis="y")
+        if self.follow_live:
+            self.getViewBox().enableAutoRange(axis="y")
