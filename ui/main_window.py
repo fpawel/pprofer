@@ -99,20 +99,11 @@ class SeriesLegendWidget(QtWidgets.QWidget):
         else:
             keys = list(self.plot_widget.visible_series_keys())
 
-        # сортировка по "горячести" (последнее значение)
-        def last_value(k):
-            points = self.plot_widget.data.get(k)
-            if not points:
-                return 0
-            return points[-1][1]
+        keys.sort(key=lambda k: self.plot_widget.series_score(k), reverse=True)
 
-        keys.sort(key=last_value, reverse=True)
-
-        # создать недостающие чекбоксы
         for key in keys:
             self.ensure_series(key)
 
-        # переупорядочить layout
         for i, key in enumerate(keys):
             cb = self.checkboxes.get(key)
             if cb:
@@ -120,7 +111,6 @@ class SeriesLegendWidget(QtWidgets.QWidget):
                 self.content_layout.insertWidget(i, cb)
                 cb.setVisible(True)
 
-        # скрыть лишние
         for key, cb in self.checkboxes.items():
             if key not in keys:
                 cb.setVisible(False)
@@ -180,6 +170,10 @@ class ProfileTab(QtWidgets.QWidget):
         self.top_n_button = QtWidgets.QPushButton("Top 10")
         controls_layout.addWidget(self.top_n_button)
 
+        self.sort_combo = QtWidgets.QComboBox()
+        self.sort_combo.addItems(["last", "avg", "max"])
+        controls_layout.addWidget(self.sort_combo)
+
         controls_layout.addStretch()
         layout.addLayout(controls_layout)
 
@@ -206,6 +200,7 @@ class ProfileTab(QtWidgets.QWidget):
         self.follow_live_checkbox.toggled.connect(self.plot.set_follow_live)
         self.view_all_button.clicked.connect(self.plot.view_all)
         self.top_n_button.clicked.connect(self.on_show_top_n)
+        self.sort_combo.currentTextChanged.connect(self.on_sort_changed)
         self.plot.manual_view_activated.connect(self._on_manual_view_activated)
 
     def _on_manual_view_activated(self):
@@ -215,6 +210,9 @@ class ProfileTab(QtWidgets.QWidget):
 
     def on_show_top_n(self):
         self.plot.show_top_n()
+
+    def on_sort_changed(self, mode):
+        self.plot.sort_mode = mode
 
 
 class MainWindow(QtWidgets.QMainWindow):

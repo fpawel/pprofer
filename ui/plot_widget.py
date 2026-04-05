@@ -97,6 +97,7 @@ class PlotWidget(pg.PlotWidget):
 
         self.follow_live = True
         self.show_all_series = False
+        self.sort_mode = "last"
         self.log_y = log_y
         self._ignore_manual_range_signal = False
 
@@ -167,18 +168,35 @@ class PlotWidget(pg.PlotWidget):
         if self.follow_live:
             self.update_x_range()
 
+    def series_score(self, key):
+        points = self.data.get(key)
+        if not points:
+            return 0
+
+        values = [v for _, v in points]
+
+        if self.sort_mode == "last":
+            return values[-1]
+
+        if self.sort_mode == "avg":
+            return sum(values) / len(values)
+
+        if self.sort_mode == "max":
+            return max(values)
+
+        return values[-1]
+
     def top_series_keys(self):
         ranked = []
         for key, points in self.data.items():
             if not points:
                 continue
-            last_value = points[-1][1]
-            ranked.append((last_value, key))
+            ranked.append((self.series_score(key), key))
         ranked.sort(reverse=True, key=lambda x: x[0])
         return [key for _, key in ranked[: self.max_visible_series]]
 
     def visible_series_keys(self):
-        return sorted(self.active_keys)
+        return sorted(self.active_keys, key=lambda k: self.series_score(k), reverse=True)
 
     def _create_curve(self, key):
         color = self.color_for_key(key)
@@ -341,7 +359,7 @@ class PlotWidget(pg.PlotWidget):
 
         self.active_keys = new_active_keys
 
-        for key in sorted(self.active_keys):
+        for key in sorted(self.active_keys, key=lambda k: self.series_score(k), reverse=True):
             points = self.data.get(key)
             curve = self.curves.get(key)
             if not points or curve is None:
