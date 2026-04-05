@@ -1,9 +1,9 @@
 import datetime
-from collections import defaultdict, deque
+from collections import defaultdict
 
 import humanize
 import pyqtgraph as pg
-from PyQt5 import QtCore, QtWidgets
+from PyQt5 import QtCore
 
 
 SERIES_COLORS = [
@@ -51,8 +51,9 @@ class HumanAxis(pg.AxisItem):
 class PlotWidget(pg.PlotWidget):
     series_added = QtCore.pyqtSignal(str)
     series_removed = QtCore.pyqtSignal(str)
+    manual_view_activated = QtCore.pyqtSignal()
 
-    def __init__(self, title, mode="bytes", max_visible_series=10):
+    def __init__(self, title, mode="bytes", max_visible_series=10, view_seconds=300):
         axis = {
             "left": HumanAxis(orientation="left", mode=mode),
             "bottom": TimeAxis(orientation="bottom"),
@@ -60,6 +61,10 @@ class PlotWidget(pg.PlotWidget):
         super().__init__(axisItems=axis)
 
         self.max_visible_series = max_visible_series
+        self.view_seconds = view_seconds
+        self.min_x_padding_seconds = 1.0
+        self.follow_live = True
+        self._ignore_manual_range_signal = False
 
         self.setBackground("w")
         self.setMinimumHeight(420)
@@ -68,28 +73,31 @@ class PlotWidget(pg.PlotWidget):
 
         left_axis = self.getAxis("left")
         bottom_axis = self.getAxis("bottom")
-
         left_axis.setTextPen(pg.mkPen("k"))
         bottom_axis.setTextPen(pg.mkPen("k"))
         left_axis.setPen(pg.mkPen("k"))
         bottom_axis.setPen(pg.mkPen("k"))
 
-        self.data = defaultdict(deque)
+        self.data = defaultdict(list)
         self.curves = {}
         self.series_colors = {}
         self.series_visible = {}
+        self.active_keys = set()
 
-    def visible_series_keys(self):
-        return self.top_series_keys()
+        vb = self.getViewBox()
+        vb.sigRangeChangedManually.connect(self._on_manual_range_changed)
 
-    def top_series_keys(self):
-        ranked = []
-        for key, dq in self.data.items():
-            if not dq:
-                continue
-            ranked.append((dq[-1][1], key))  # последнее значение flat
-        ranked.sort(reverse=True, key=lambda x: x[0])
-        return [key for _, key in ranked[: self.max_visible_series]]
+    def _on_manual_range_changed(self, *args):
+        if self._ignore_manual_range_signal:
+            return
+        if self.follow_live:
+            self.follow_live = False
+            self.manual_view_activated.emit()
+
+    def set_follow_live(self, enabled: bool):
+        self.follow_live = enabled
+        if enabled:
+            self.update_x_range()
 
     def color_for_key(self, key):
         if key not in self.series_colors:
@@ -98,121 +106,175 @@ class PlotWidget(pg.PlotWidget):
         return self.series_colors[key]
 
     def add_point(self, key, ts, value):
-        dq = self.data[key]
-        dq.append((ts, value))
-
-        cutoff = ts - 60
-        while dq and dq[0][0] < cutoff:
-            dq.popleft()
-
+        self.data[key].append((ts, value))
         if key not in self.series_visible:
             self.series_visible[key] = True
-
-    # def add_point(self, key, ts, value):
-    #     is_new_series = key not in self.data
-    #
-    #     dq = self.data[key]
-    #     dq.append((ts, value))
-    #
-    #     cutoff = ts - 60
-    #     while dq and dq[0][0] < cutoff:
-    #         dq.popleft()
-    #
-    #     if key not in self.curves:
-    #         pen = pg.mkPen(color=self.color_for_key(key), width=2)
-    #         curve = self.plot(
-    #             name=key,
-    #             pen=pen,
-    #             symbol="o",
-    #             symbolSize=6,
-    #             symbolBrush=self.color_for_key(key),
-    #             symbolPen=self.color_for_key(key),
-    #         )
-    #         self.curves[key] = curve
-    #
-    #     if key not in self.series_visible:
-    #         self.series_visible[key] = True
-    #
-    #     self.curves[key].setVisible(self.series_visible[key])
-    #
-    #     if is_new_series:
-    #         self.series_added.emit(key)
 
     def set_series_visible(self, key, visible):
         self.series_visible[key] = visible
         curve = self.curves.get(key)
         if curve is not None:
             curve.setVisible(visible)
+        if self.follow_live:
+            self.update_x_range()
 
-    def all_series(self):
-        return sorted(self.data.keys())
+    def top_series_keys(self):
+        ranked = []
+        for key, points in self.data.items():
+            if not points:
+                continue
+            last_value = points[-1][1]
+            ranked.append((last_value, key))
+        ranked.sort(reverse=True, key=lambda x: x[0])
+        return [key for _, key in ranked[: self.max_visible_series]]
 
-    def refresh(self, now):
-        dead_keys = []
+    def visible_series_keys(self):
+        return sorted(self.active_keys)
 
-        for key, dq in self.data.items():
-            while dq and dq[0][0] < now - 60:
-                dq.popleft()
+    def _create_curve(self, key):
+        color = self.color_for_key(key)
+        pen = pg.mkPen(color=color, width=2)
+        curve = self.plot(
+            name=key,
+            pen=pen,
+            symbol="o",
+            symbolSize=5,
+            symbolBrush=color,
+            symbolPen=color,
+        )
+        self.curves[key] = curve
 
-            if not dq:
-                dead_keys.append(key)
+    def _remove_curve(self, key):
+        curve = self.curves.pop(key, None)
+        if curve is not None:
+            self.removeItem(curve)
 
-        for key in dead_keys:
-            curve = self.curves.pop(key, None)
-            if curve is not None:
-                self.removeItem(curve)
-            self.data.pop(key, None)
-            self.series_colors.pop(key, None)
-            self.series_visible.pop(key, None)
+    def _visible_points_bounds(self):
+        min_x = None
+        max_x = None
+
+        for key in self.active_keys:
+            if not self.series_visible.get(key, True):
+                continue
+
+            points = self.data.get(key)
+            if not points:
+                continue
+
+            first_x = points[0][0]
+            last_x = points[-1][0]
+
+            if min_x is None or first_x < min_x:
+                min_x = first_x
+            if max_x is None or last_x > max_x:
+                max_x = last_x
+
+        return min_x, max_x
+
+    def update_x_range(self):
+        if not self.follow_live:
+            return
+
+        min_x, max_x = self._visible_points_bounds()
+        if min_x is None or max_x is None:
+            return
+
+        self._ignore_manual_range_signal = True
+        try:
+            if max_x <= min_x:
+                left = min_x - self.min_x_padding_seconds
+                right = max_x + self.min_x_padding_seconds
+                self.setXRange(left, right, padding=0)
+                return
+
+            span = max_x - min_x
+
+            if span < self.view_seconds:
+                padding = max(span * 0.05, self.min_x_padding_seconds)
+                left = min_x - padding
+                right = max_x + padding
+            else:
+                left = max_x - self.view_seconds
+                right = max_x
+
+            self.setXRange(left, right, padding=0)
+        finally:
+            self._ignore_manual_range_signal = False
+
+    def view_all(self):
+        min_x = None
+        max_x = None
+        min_y = None
+        max_y = None
+
+        for key in self.active_keys:
+            if not self.series_visible.get(key, True):
+                continue
+
+            points = self.data.get(key)
+            if not points:
+                continue
+
+            xs = [t for t, _ in points]
+            ys = [v for _, v in points]
+
+            x1, x2 = min(xs), max(xs)
+            y1, y2 = min(ys), max(ys)
+
+            min_x = x1 if min_x is None else min(min_x, x1)
+            max_x = x2 if max_x is None else max(max_x, x2)
+            min_y = y1 if min_y is None else min(min_y, y1)
+            max_y = y2 if max_y is None else max(max_y, y2)
+
+        if min_x is None or max_x is None:
+            return
+
+        if min_x == max_x:
+            min_x -= self.min_x_padding_seconds
+            max_x += self.min_x_padding_seconds
+
+        if min_y is None or max_y is None:
+            return
+
+        if min_y == max_y:
+            delta = max(abs(min_y) * 0.05, 1.0)
+            min_y -= delta
+            max_y += delta
+
+        self._ignore_manual_range_signal = True
+        try:
+            self.setXRange(min_x, max_x, padding=0.02)
+            self.setYRange(min_y, max_y, padding=0.05)
+        finally:
+            self._ignore_manual_range_signal = False
+
+    def refresh(self, _now):
+        new_active_keys = set(self.top_series_keys())
+
+        removed_keys = self.active_keys - new_active_keys
+        for key in removed_keys:
+            self._remove_curve(key)
             self.series_removed.emit(key)
 
-        top_keys = self.top_series_keys()
+        added_keys = new_active_keys - self.active_keys
+        for key in added_keys:
+            self._create_curve(key)
+            self.series_added.emit(key)
 
-        # удалить curves не из top N
-        for key in list(self.curves.keys()):
-            if key not in top_keys:
-                curve = self.curves.pop(key)
-                self.removeItem(curve)
-                self.series_removed.emit(key)
+        self.active_keys = new_active_keys
 
-        # создать curves только для top N
-        for key in top_keys:
-            if key not in self.curves:
-                color = self.color_for_key(key)
-                pen = pg.mkPen(color=color, width=2)
-                curve = self.plot(
-                    name=key,
-                    pen=pen,
-                    symbol="o",
-                    symbolSize=5,
-                    symbolBrush=color,
-                    symbolPen=color,
-                )
-                self.curves[key] = curve
-                self.series_added.emit(key)
-
-        visible_keys = []
-
-        for key in top_keys:
-            dq = self.data.get(key)
+        for key in sorted(self.active_keys):
+            points = self.data.get(key)
             curve = self.curves.get(key)
-            if not dq or curve is None:
+            if not points or curve is None:
                 continue
+
+            xs = [t for t, _ in points]
+            ys = [v for _, v in points]
+            curve.setData(xs, ys)
 
             visible = self.series_visible.get(key, True)
             curve.setVisible(visible)
 
-            if not visible:
-                continue
-
-            xs = [t for t, _ in dq]
-            ys = [v for _, v in dq]
-            curve.setData(xs, ys)
-            visible_keys.append(key)
-
-        if visible_keys:
-            right = max(self.data[key][-1][0] for key in visible_keys if self.data[key])
-            left = right - 60
-            self.setXRange(left, right, padding=0)
-
+        self.update_x_range()
         self.getViewBox().enableAutoRange(axis="y")

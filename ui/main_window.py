@@ -32,10 +32,11 @@ class SeriesLegendWidget(QtWidgets.QWidget):
         title.setStyleSheet("font-weight: bold;")
         root_layout.addWidget(title)
 
+        buttons_layout = QtWidgets.QHBoxLayout()
+
         self.select_all_button = QtWidgets.QPushButton("Show all")
         self.hide_all_button = QtWidgets.QPushButton("Hide all")
 
-        buttons_layout = QtWidgets.QHBoxLayout()
         buttons_layout.addWidget(self.select_all_button)
         buttons_layout.addWidget(self.hide_all_button)
         root_layout.addLayout(buttons_layout)
@@ -56,19 +57,14 @@ class SeriesLegendWidget(QtWidgets.QWidget):
         self.hide_all_button.clicked.connect(self.hide_all)
 
         self.plot_widget.series_added.connect(self.ensure_series)
-
-    def refresh_visible_series(self):
-        allowed = set(self.plot_widget.visible_series_keys())
-
-        for key, checkbox in self.checkboxes.items():
-            checkbox.setVisible(key in allowed)
+        self.plot_widget.series_removed.connect(self.remove_series)
 
     def ensure_series(self, key):
         if key in self.checkboxes:
             return
 
         checkbox = QtWidgets.QCheckBox(key)
-        checkbox.setChecked(True)
+        checkbox.setChecked(self.plot_widget.series_visible.get(key, True))
         checkbox.toggled.connect(
             lambda checked, series_key=key: self.plot_widget.set_series_visible(series_key, checked)
         )
@@ -76,8 +72,22 @@ class SeriesLegendWidget(QtWidgets.QWidget):
         self.checkboxes[key] = checkbox
         self.content_layout.insertWidget(self.content_layout.count() - 1, checkbox)
 
+    def remove_series(self, key):
+        checkbox = self.checkboxes.pop(key, None)
+        if checkbox is None:
+            return
+        checkbox.setParent(None)
+        checkbox.deleteLater()
+
+    def refresh_visible_series(self):
+        allowed = set(self.plot_widget.visible_series_keys())
+        for key, checkbox in self.checkboxes.items():
+            checkbox.setVisible(key in allowed)
+
     def show_all(self):
         for key, checkbox in self.checkboxes.items():
+            if not checkbox.isVisible():
+                continue
             checkbox.blockSignals(True)
             checkbox.setChecked(True)
             checkbox.blockSignals(False)
@@ -85,6 +95,8 @@ class SeriesLegendWidget(QtWidgets.QWidget):
 
     def hide_all(self):
         for key, checkbox in self.checkboxes.items():
+            if not checkbox.isVisible():
+                continue
             checkbox.blockSignals(True)
             checkbox.setChecked(False)
             checkbox.blockSignals(False)
@@ -92,26 +104,52 @@ class SeriesLegendWidget(QtWidgets.QWidget):
 
 
 class ProfileTab(QtWidgets.QWidget):
-    def __init__(self, profile_name, mode, parent=None):
+    def __init__(self, profile_name, mode, max_visible_series=10, view_seconds=300, parent=None):
         super().__init__(parent)
 
-        layout = QtWidgets.QHBoxLayout(self)
+        layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
+
+        controls_layout = QtWidgets.QHBoxLayout()
+
+        self.follow_live_checkbox = QtWidgets.QCheckBox("Follow live")
+        self.follow_live_checkbox.setChecked(True)
+        controls_layout.addWidget(self.follow_live_checkbox)
+
+        self.view_all_button = QtWidgets.QPushButton("View all")
+        controls_layout.addWidget(self.view_all_button)
+
+        controls_layout.addStretch()
+        layout.addLayout(controls_layout)
 
         splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         layout.addWidget(splitter)
 
-        self.plot = PlotWidget(profile_name, mode=mode)
+        self.plot = PlotWidget(
+            profile_name,
+            mode=mode,
+            max_visible_series=max_visible_series,
+            view_seconds=view_seconds,
+        )
         splitter.addWidget(self.plot)
 
         self.legend = SeriesLegendWidget(self.plot)
-        self.legend.setMinimumWidth(280)
+        self.legend.setMinimumWidth(320)
         splitter.addWidget(self.legend)
 
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
         splitter.setSizes([1100, 320])
+
+        self.follow_live_checkbox.toggled.connect(self.plot.set_follow_live)
+        self.view_all_button.clicked.connect(self.plot.view_all)
+        self.plot.manual_view_activated.connect(self._on_manual_view_activated)
+
+    def _on_manual_view_activated(self):
+        self.follow_live_checkbox.blockSignals(True)
+        self.follow_live_checkbox.setChecked(False)
+        self.follow_live_checkbox.blockSignals(False)
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -134,10 +172,35 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.plots = {}
 
+        max_visible_by_profile = {
+            "heap": 10,
+            "goroutine": 10,
+            "allocs": 10,
+            "profile": 10,
+            "block": 10,
+            "mutex": 10,
+            "threadcreate": 10,
+        }
+
+        view_seconds_by_profile = {
+            "heap": 300,
+            "goroutine": 300,
+            "allocs": 300,
+            "profile": 300,
+            "block": 300,
+            "mutex": 300,
+            "threadcreate": 300,
+        }
+
         for profile in PROFILES:
             mode = "bytes" if profile in BYTES_PROFILES else "count"
 
-            tab = ProfileTab(profile, mode=mode)
+            tab = ProfileTab(
+                profile_name=profile,
+                mode=mode,
+                max_visible_series=max_visible_by_profile[profile],
+                view_seconds=view_seconds_by_profile[profile],
+            )
             self.tabs.addTab(tab, profile)
             self.plots[profile] = tab.plot
 
@@ -151,7 +214,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_event(self, ev):
         key = f"{ev['line']}|{ev.get('inline', '')}"
-        self.plots[ev["_type"]].add_point(key, ev["_ts"], ev["flat"])
+        plot = self.plots.get(ev["_type"])
+        if plot is not None:
+            plot.add_point(key, ev["_ts"], ev["flat"])
 
     def refresh(self):
         now = time.time()
@@ -159,7 +224,6 @@ class MainWindow(QtWidgets.QMainWindow):
             tab = self.tabs.widget(tab_index)
             tab.plot.refresh(now)
             tab.legend.refresh_visible_series()
-
 
     def closeEvent(self, event):
         self.client.stop()
