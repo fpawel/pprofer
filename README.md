@@ -27,7 +27,7 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-`requirements.txt` contains `PyQt5`, `pyqtgraph`, `humanize`, and `requests`, which are used by the UI code. fileciteturn3file0 fileciteturn3file1 fileciteturn3file3 fileciteturn3file6
+`requirements.txt` contains `PyQt5`, `pyqtgraph`, `humanize`, and `requests`, which are used by the UI code.
 
 ## Quick start
 
