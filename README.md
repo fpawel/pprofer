@@ -53,7 +53,7 @@ For a local demo, run the sample workload from `cmd/dummy` in a separate termina
 go run ./cmd/dummy
 ```
 
-The dummy app exposes `pprof` on `http://localhost:6060` and generates CPU, memory, and goroutine activity so the viewer has live data to display. The sample program imports `net/http/pprof`, starts an HTTP server on `localhost:6060`, enables block and mutex profiling, and spawns background workers. fileciteturn0file3
+The dummy app exposes `pprof` on `http://localhost:6060` and generates CPU, memory, and goroutine activity so the viewer has live data to display. The sample program imports `net/http/pprof`, starts an HTTP server on `localhost:6060`, enables block and mutex profiling, and spawns background workers.
 
 Then start the viewer:
 
