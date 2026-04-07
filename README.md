@@ -43,7 +43,7 @@ Or with an explicit backend listen address:
 ./run-live-pprof-viewer.sh http://localhost:6060 127.0.0.1:8081
 ```
 
-The script starts the Go backend, waits for `/health`, then launches the UI. The backend expects two positional arguments: listen address and `pprof` base URL. The UI accepts the backend base URL as its first argument. fileciteturn8file1 fileciteturn3file0
+The script starts the Go backend, waits for `/health`, then launches the UI. The backend expects two positional arguments: listen address and `pprof` base URL. The UI accepts the backend base URL as its first argument.
 
 ## Demo workload
 
