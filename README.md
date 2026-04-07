@@ -11,6 +11,8 @@ It has two parts:
   - `GET /health` for readiness checks
 - a PyQt desktop UI that subscribes to the SSE stream and shows live charts for `heap`, `goroutine`, `allocs`, `profile`, `block`, `mutex`, and `threadcreate`. fileciteturn8file1 fileciteturn8file9
 
+![img.png](img.png)
+
 ## Requirements
 
 - Go
