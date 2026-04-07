@@ -1,5 +1,4 @@
 PyQt5
 pyqtgraph
-requests
 humanize
-python-qt5
+requests
