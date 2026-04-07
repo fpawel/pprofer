@@ -40,4 +40,4 @@ __pycache__/
 *.py[cod]
 *$py.class
 .Python
-.claude
+.claude.idea/
