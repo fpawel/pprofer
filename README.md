@@ -72,6 +72,6 @@ python main.py http://127.0.0.1:8080
 
 ## Notes
 
-- The backend publishes flat values per function/line over SSE. fileciteturn8file2 fileciteturn8file16
-- Selecting a series in the UI loads and shows its stack trace. fileciteturn3file4 fileciteturn8file11
-- The default backend URL used by the UI is `http://127.0.0.1:8080`. fileciteturn3file0
+- The backend publishes flat values per function/line over SSE. 
+- Selecting a series in the UI loads and shows its stack trace. 
+- The default backend URL used by the UI is `http://127.0.0.1:8080`. 
