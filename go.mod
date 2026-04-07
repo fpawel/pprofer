@@ -16,7 +16,9 @@ require (
 	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/cloudflare/circl v1.6.1 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fatih/color v1.19.0 // indirect
+	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/icholy/digest v1.1.0 // indirect
 	github.com/klauspost/compress v1.18.2 // indirect
@@ -28,6 +30,9 @@ require (
 	github.com/quic-go/quic-go v0.57.1 // indirect
 	github.com/refraction-networking/utls v1.8.1 // indirect
 	github.com/tmaxmax/go-sse v0.11.0 // indirect
+	github.com/veqryn/slog-context v0.9.0 // indirect
+	github.com/vorlif/humanize v1.0.0 // indirect
+	github.com/vorlif/spreak v1.0.0 // indirect
 	go.uber.org/mock v0.6.0 // indirect
 	golang.org/x/crypto v0.46.0 // indirect
 	golang.org/x/mod v0.30.0 // indirect

@@ -12,12 +12,15 @@ import (
 
 	"github.com/fpawel/pprofer/internal"
 	"github.com/fpawel/pprofer/internal/app"
+	"github.com/fpawel/pprofer/internal/httph"
+	httpSimpleJSON "github.com/fpawel/pprofer/internal/httph/middleware/simple_json"
+	"github.com/fpawel/pprofer/internal/logh"
 )
 
 var exitErr = internal.ExitErr
 
 func main() {
-	logHandler := internal.NewLogHandler(slog.LevelDebug)
+	logHandler := logh.NewLogHandler(slog.LevelDebug)
 	slog.SetDefault(slog.New(logHandler))
 
 	var args struct {
@@ -33,12 +36,16 @@ func main() {
 	profsPub := app.NewHandler(args.Pprof)
 
 	mux.Handle("/events", profsPub)
+	mux.Handle("/stack", httpSimpleJSON.MustResponse(profsPub.Stacks.Stack))
+	mux.Handle("/labels", httpSimpleJSON.MustResponse(profsPub.Stacks.Labels))
 
-	mux.HandleFunc("/health", handleHealth)
+	mux.Handle("/health", httpSimpleJSON.Value(map[string]string{
+		"status": "healthy",
+	}))
 
 	server := &http.Server{
 		Addr:              args.Addr,
-		Handler:           mux,
+		Handler:           httph.Wrap(mux),
 		ReadHeaderTimeout: time.Second * 10,
 		ErrorLog:          slog.NewLogLogger(logHandler, slog.LevelDebug),
 	}

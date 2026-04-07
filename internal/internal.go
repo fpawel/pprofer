@@ -6,11 +6,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/fpawel/slogx/slogctx"
-	"github.com/fpawel/slogx/slogpretty"
+	"github.com/fpawel/pprofer/internal/logh"
 )
 
-var logger = slog.New(NewLogHandler(slog.LevelDebug))
+var logger = slog.New(logh.NewLogHandler(slog.LevelDebug))
 
 // ExitErr завершает выполнение программы при возникновении ошибки.
 // Если err не равен nil, функция логирует ошибку с помощью slog.Error.
@@ -58,11 +57,4 @@ func errArgs(err error, args ...any) error {
 		}
 	}
 	return err
-}
-
-func NewLogHandler(logLevel slog.Level) slog.Handler {
-	return slogctx.NewHandler(
-		slogpretty.NewPrettyHandler().
-			WithSourceInfo(false).
-			WithLogLevel(logLevel))
 }

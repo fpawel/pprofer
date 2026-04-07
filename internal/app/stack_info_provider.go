@@ -1,6 +1,8 @@
 package app
 
 import (
+	"net/http"
+
 	"github.com/fpawel/pprofer/internal/pprof"
 )
 
@@ -34,15 +36,28 @@ func NewStackInfoProvider() *StackInfoProvider {
 	return h
 }
 
-func (h *StackInfoProvider) FuncLineStack(f FuncLine) Stack {
+func (h *StackInfoProvider) FeedMetrics(m *pprof.Metrics) {
+	h.chIn <- m
+}
+
+func (h *StackInfoProvider) Stack(r *http.Request) any {
 	ch := make(chan Stack)
-	h.chStackReq <- stackReq{f, ch}
+	h.chStackReq <- stackReq{
+		FuncLine: FuncLine{
+			Func:   getQueryStr(r, "func"),
+			Line:   getQueryStr(r, "line"),
+			Inline: getQueryStr(r, "inline"),
+		},
+		ch: ch,
+	}
 	return <-ch
 }
 
-func (h *StackInfoProvider) Labels() []string {
+func (h *StackInfoProvider) Labels(*http.Request) any {
 	ch := make(chan []string)
-	h.chLabelsReq <- labelsReq{ch}
+	h.chLabelsReq <- labelsReq{
+		ch: ch,
+	}
 	return <-ch
 }
 
@@ -77,6 +92,10 @@ func (h *StackInfoProvider) run() {
 	}
 }
 
-func (h *StackInfoProvider) FeedMetrics(m *pprof.Metrics) {
-	h.chIn <- m
+func getQueryStr(r *http.Request, key string) string {
+	xs := r.URL.Query()[key]
+	if xs == nil {
+		return ""
+	}
+	return xs[0]
 }

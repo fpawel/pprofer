@@ -2,11 +2,11 @@ package app
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
 
+	"github.com/fpawel/pprofer/internal/httph/status"
 	"github.com/fpawel/pprofer/internal/pprof"
 	"github.com/rs/xid"
 	"github.com/tmaxmax/go-sse"
@@ -15,9 +15,10 @@ import (
 type Handler struct {
 	*sse.Server
 	pprof.Client
+	Stacks *StackInfoProvider
+
 	profs   map[string]*profHandler
 	muProfs *sync.Mutex
-	stacks  *StackInfoProvider
 }
 
 func NewHandler(pprofURL string) Handler {
@@ -33,23 +34,27 @@ func NewHandler(pprofURL string) Handler {
 				return append(topics, sse.DefaultTopic), true
 			},
 		},
-		stacks: NewStackInfoProvider(),
+		Stacks: NewStackInfoProvider(),
 	}
 }
 
 func (p Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if err := p.serveHTTP(w, r); err != nil {
+		status.WriteError(w, err)
+	}
+}
+
+func (p Handler) serveHTTP(w http.ResponseWriter, r *http.Request) error {
 	topics := r.URL.Query()["topic"]
 	if len(topics) == 0 {
-		s := fmt.Sprintf("you must specify at least one topic from the list %q", pprof.ProfTypes)
-		http.Error(w, s, http.StatusBadRequest)
-		return
+		return status.NewErrorCodeMsgFormat(http.StatusBadRequest,
+			"you must specify at least one topic from the list %q", pprof.ProfTypes)
 	}
 	for _, topic := range topics {
 		if !pprof.IsValidProfileType(topic) {
-			s := fmt.Sprintf("invalid profile type %q; supported are %q",
+			return status.NewErrorCodeMsgFormat(http.StatusBadRequest,
+				"invalid profile type %q; supported are %q",
 				topic, pprof.ProfTypes)
-			http.Error(w, s, http.StatusBadRequest)
-			return
 		}
 	}
 
@@ -74,6 +79,7 @@ func (p Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	p.muProfs.Unlock()
+	return nil
 }
 
 func (p Handler) startProf(profType string) {
@@ -86,7 +92,7 @@ func (p Handler) startProf(profType string) {
 		Client:        p.Client,
 		profType:      profType,
 		cancelFunc:    cancel,
-		metricsFeeder: p.stacks,
+		metricsFeeder: p.Stacks,
 		log:           slog.With("prof", profType, "id", xid.New()),
 	}
 	go pp.run(ctx)
