@@ -1,4 +1,5 @@
 import time
+from html import escape
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
@@ -49,6 +50,100 @@ def format_stack_frames(frames):
     return "\n".join(lines)
 
 
+def format_series_header_html(func, inline):
+    if not func:
+        return '<span style="color:#777777; font-size:15px;">Серия не выбрана</span>'
+
+    blocks = []
+
+    blocks.append(
+        f"""
+        <div style="
+            font-size: 22px;
+            font-weight: 700;
+            color: #1f4e79;
+            margin-bottom: 6px;
+        ">
+            {escape(func)}
+        </div>
+        """
+    )
+
+    if inline:
+        blocks.append(
+            f"""
+            <div>
+                <span style="
+                    background: #fff3cd;
+                    color: #7a4f00;
+                    border: 1px solid #e6d28a;
+                    border-radius: 10px;
+                    padding: 2px 8px;
+                    font-size: 13px;
+                    font-weight: 600;
+                ">
+                    {escape(inline)}
+                </span>
+            </div>
+            """
+        )
+
+    return "".join(blocks)
+
+
+class StackTraceHighlighter(QtGui.QSyntaxHighlighter):
+    def __init__(self, document):
+        super().__init__(document)
+
+        self.func_format = QtGui.QTextCharFormat()
+        self.func_format.setForeground(QtGui.QColor("#1f4e79"))
+        self.func_format.setFontWeight(QtGui.QFont.Bold)
+
+        self.file_format = QtGui.QTextCharFormat()
+        self.file_format.setForeground(QtGui.QColor("#555555"))
+
+        self.line_number_format = QtGui.QTextCharFormat()
+        self.line_number_format.setForeground(QtGui.QColor("#b35a00"))
+        self.line_number_format.setFontWeight(QtGui.QFont.Bold)
+
+        self.first_frame_background = QtGui.QTextCharFormat()
+        self.first_frame_background.setBackground(QtGui.QColor("#fff3cd"))
+
+        self.info_format = QtGui.QTextCharFormat()
+        self.info_format.setForeground(QtGui.QColor("#777777"))
+        self.info_format.setFontItalic(True)
+
+    def highlightBlock(self, text):
+        if not text:
+            return
+
+        stripped = text.strip()
+
+        if (
+            stripped.startswith("Загрузка")
+            or stripped.startswith("Не удалось")
+            or stripped.startswith("Стектрейс недоступен")
+            or stripped.startswith("Выбери серию")
+        ):
+            self.setFormat(0, len(text), self.info_format)
+            return
+
+        if stripped and stripped[0].isdigit() and ". " in stripped:
+            if stripped.startswith("1."):
+                self.setFormat(0, len(text), self.first_frame_background)
+            self.setFormat(0, len(text), self.func_format)
+            return
+
+        if text.startswith("    "):
+            pos = text.rfind(":")
+            if pos > 0 and text[pos + 1 :].strip().isdigit():
+                self.setFormat(0, pos, self.file_format)
+                self.setFormat(pos, len(text) - pos, self.line_number_format)
+                return
+
+            self.setFormat(0, len(text), self.file_format)
+
+
 class StackFetchThread(QtCore.QThread):
     loaded = QtCore.pyqtSignal(int, object)
     failed = QtCore.pyqtSignal(int, str)
@@ -90,7 +185,7 @@ class SeriesListWidget(QtWidgets.QWidget):
         root_layout.setSpacing(8)
 
         title = QtWidgets.QLabel("Series")
-        title.setStyleSheet("font-weight: bold;")
+        title.setStyleSheet("font-weight: bold; font-size: 15px;")
         root_layout.addWidget(title)
 
         buttons_layout = QtWidgets.QHBoxLayout()
@@ -104,6 +199,14 @@ class SeriesListWidget(QtWidgets.QWidget):
         self.list_widget.setAlternatingRowColors(True)
         self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.list_widget.setUniformItemSizes(True)
+        self.list_widget.setStyleSheet("""
+            QListWidget {
+                font-size: 15px;
+            }
+            QListWidget::item {
+                padding: 6px 4px;
+            }
+        """)
         root_layout.addWidget(self.list_widget, 1)
 
         self.select_all_button.clicked.connect(self.show_all)
@@ -150,6 +253,9 @@ class SeriesListWidget(QtWidgets.QWidget):
         self.list_widget.blockSignals(True)
         self.list_widget.clear()
 
+        item_font = self.list_widget.font()
+        item_font.setPointSize(15)
+
         for key in keys:
             name = self.plot_widget.series_names.get(key, key)
             color = self.plot_widget.color_for_key(key)
@@ -167,6 +273,7 @@ class SeriesListWidget(QtWidgets.QWidget):
                 else QtCore.Qt.Unchecked
             )
             item.setForeground(QtGui.QColor(color))
+            item.setFont(item_font)
 
             self.list_widget.addItem(item)
             self._items_by_key[key] = item
@@ -250,7 +357,7 @@ class ProfileTab(QtWidgets.QWidget):
         outer_splitter.addWidget(right_splitter)
 
         self.series_list = SeriesListWidget(self.plot)
-        self.series_list.setMinimumWidth(360)
+        self.series_list.setMinimumWidth(380)
         right_splitter.addWidget(self.series_list)
 
         stack_panel = QtWidgets.QWidget()
@@ -259,19 +366,43 @@ class ProfileTab(QtWidgets.QWidget):
         stack_layout.setSpacing(6)
 
         stack_title = QtWidgets.QLabel("Stack trace")
-        stack_title.setStyleSheet("font-weight: bold;")
+        stack_title.setStyleSheet("font-weight: bold; font-size: 15px;")
         stack_layout.addWidget(stack_title)
 
-        self.stack_series_label = QtWidgets.QLabel("Серия не выбрана")
+        self.stack_series_label = QtWidgets.QLabel()
         self.stack_series_label.setWordWrap(True)
+        self.stack_series_label.setTextFormat(QtCore.Qt.RichText)
+        self.stack_series_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.stack_series_label.setStyleSheet("""
+            QLabel {
+                background: #fcfcfc;
+                border: 1px solid #d8d8d8;
+                border-radius: 4px;
+                padding: 8px;
+            }
+        """)
+        self.stack_series_label.setText(format_series_header_html("", ""))
         stack_layout.addWidget(self.stack_series_label)
 
         self.stack_view = QtWidgets.QPlainTextEdit()
         self.stack_view.setReadOnly(True)
         self.stack_view.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
-        self.stack_view.setStyleSheet(
-            "font-family: Consolas, 'Courier New', monospace; font-size: 12px;"
-        )
+
+        font = QtGui.QFont("Consolas")
+        font.setStyleHint(QtGui.QFont.Monospace)
+        font.setPointSize(14)
+        self.stack_view.setFont(font)
+
+        self.stack_view.setTabStopDistance(32)
+        self.stack_view.setStyleSheet("""
+            QPlainTextEdit {
+                background: #fcfcfc;
+                border: 1px solid #d8d8d8;
+                padding: 8px;
+                selection-background-color: #cfe8ff;
+            }
+        """)
+        self.stack_highlighter = StackTraceHighlighter(self.stack_view.document())
         self.stack_view.setPlainText("Выбери серию справа, чтобы увидеть стектрейс.")
         stack_layout.addWidget(self.stack_view, 1)
 
@@ -279,11 +410,11 @@ class ProfileTab(QtWidgets.QWidget):
 
         outer_splitter.setStretchFactor(0, 1)
         outer_splitter.setStretchFactor(1, 0)
-        outer_splitter.setSizes([1100, 420])
+        outer_splitter.setSizes([1100, 440])
 
         right_splitter.setStretchFactor(0, 1)
         right_splitter.setStretchFactor(1, 1)
-        right_splitter.setSizes([420, 320])
+        right_splitter.setSizes([420, 340])
 
         self.follow_live_checkbox.toggled.connect(self.plot.set_follow_live)
         self.view_all_button.clicked.connect(self.plot.view_all)
@@ -307,7 +438,7 @@ class ProfileTab(QtWidgets.QWidget):
         self.plot.set_selected_series(key)
 
         if not key:
-            self.stack_series_label.setText("Серия не выбрана")
+            self.stack_series_label.setText(format_series_header_html("", ""))
             self.stack_view.setPlainText("Выбери серию справа, чтобы увидеть стектрейс.")
             return
 
@@ -316,13 +447,7 @@ class ProfileTab(QtWidgets.QWidget):
         line = meta.get("line", "")
         inline = meta.get("inline", "")
 
-        title = func or key
-        if line:
-            title = f"{title}\n{line}"
-        if inline:
-            title = f"{title}\n{inline}"
-
-        self.stack_series_label.setText(title)
+        self.stack_series_label.setText(format_series_header_html(func, inline))
         self.stack_view.setPlainText("Загрузка стектрейса...")
 
         self._stack_request_id += 1
@@ -418,7 +543,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         key = f"{ev['func']}|{ev['line']}|{ev.get('inline', '')}"
 
-        display_name = f"{ev['func']} — {ev['line']}"
+        display_name = ev["func"]
         if ev.get("inline"):
             display_name += " (inl)"
 
