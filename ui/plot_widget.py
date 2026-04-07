@@ -121,7 +121,9 @@ class PlotWidget(pg.PlotWidget):
         self.series_colors = {}
         self.series_visible = {}
         self.series_names = {}
+        self.series_meta = {}
         self.active_keys = set()
+        self.selected_key = None
 
         vb = self.getViewBox()
         vb.sigRangeChangedManually.connect(self._on_manual_range_changed)
@@ -147,18 +149,25 @@ class PlotWidget(pg.PlotWidget):
         self.show_all_series = False
         self.manual_view_activated.emit()
 
+    def set_selected_series(self, key):
+        self.selected_key = key or None
+        for series_key in self.curves.keys():
+            self._update_curve_style(series_key)
+
     def color_for_key(self, key):
         if key not in self.series_colors:
             idx = len(self.series_colors) % len(SERIES_COLORS)
             self.series_colors[key] = SERIES_COLORS[idx]
         return self.series_colors[key]
 
-    def add_point(self, key, ts, value, display_name=None):
+    def add_point(self, key, ts, value, display_name=None, meta=None):
         self.data[key].append((ts, value))
         if key not in self.series_visible:
             self.series_visible[key] = True
         if display_name:
             self.series_names[key] = display_name
+        if meta is not None:
+            self.series_meta[key] = meta
 
     def set_series_visible(self, key, visible):
         self.series_visible[key] = visible
@@ -212,11 +221,24 @@ class PlotWidget(pg.PlotWidget):
             symbolPen=color,
         )
         self.curves[key] = curve
+        self._update_curve_style(key)
 
     def _remove_curve(self, key):
         curve = self.curves.pop(key, None)
         if curve is not None:
             self.removeItem(curve)
+
+    def _update_curve_style(self, key):
+        curve = self.curves.get(key)
+        if curve is None:
+            return
+
+        color = self.color_for_key(key)
+        is_selected = key == self.selected_key
+        width = 4 if is_selected else 2
+
+        curve.setPen(pg.mkPen(color=color, width=width))
+        curve.setZValue(10 if is_selected else 0)
 
     def _visible_points_bounds(self):
         min_x = None
@@ -347,6 +369,9 @@ class PlotWidget(pg.PlotWidget):
         else:
             new_active_keys = set(self.top_series_keys())
 
+        if self.selected_key and self.selected_key in self.data:
+            new_active_keys.add(self.selected_key)
+
         removed_keys = self.active_keys - new_active_keys
         for key in removed_keys:
             self._remove_curve(key)
@@ -372,6 +397,7 @@ class PlotWidget(pg.PlotWidget):
 
             visible = self.series_visible.get(key, True)
             curve.setVisible(visible)
+            self._update_curve_style(key)
 
         self.update_x_range()
         if self.follow_live:

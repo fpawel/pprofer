@@ -1,9 +1,10 @@
 import time
 
-from PyQt5 import QtCore, QtWidgets
+from PyQt5 import QtCore, QtGui, QtWidgets
 
 from .plot_widget import PlotWidget
 from .sse import SseClient
+from .stack_client import get_stack
 
 PROFILES = [
     "heap",
@@ -28,11 +29,61 @@ PROFILE_MODE = {
 LOG_SCALE_PROFILES = {"heap", "allocs", "profile", "block", "mutex"}
 
 
-class SeriesLegendWidget(QtWidgets.QWidget):
+def format_stack_frames(frames):
+    if not frames:
+        return "Стектрейс недоступен."
+
+    lines = []
+    for index, frame in enumerate(frames, 1):
+        func = frame.get("function") or "<unknown>"
+        file = frame.get("file") or ""
+        line = frame.get("line")
+
+        lines.append(f"{index:>2}. {func}")
+        if file:
+            if line:
+                lines.append(f"    {file}:{line}")
+            else:
+                lines.append(f"    {file}")
+
+    return "\n".join(lines)
+
+
+class StackFetchThread(QtCore.QThread):
+    loaded = QtCore.pyqtSignal(int, object)
+    failed = QtCore.pyqtSignal(int, str)
+
+    def __init__(self, base_url, func, line, inline, request_id, parent=None):
+        super().__init__(parent)
+        self.base_url = base_url
+        self.func = func
+        self.line = line
+        self.inline = inline
+        self.request_id = request_id
+
+    def run(self):
+        try:
+            frames = get_stack(
+                base_url=self.base_url,
+                func=self.func,
+                line=self.line,
+                inline=self.inline,
+            )
+        except Exception as exc:
+            self.failed.emit(self.request_id, str(exc))
+            return
+
+        self.loaded.emit(self.request_id, frames)
+
+
+class SeriesListWidget(QtWidgets.QWidget):
+    series_selected = QtCore.pyqtSignal(str)
+
     def __init__(self, plot_widget, parent=None):
         super().__init__(parent)
         self.plot_widget = plot_widget
-        self.checkboxes = {}
+        self._selected_key = None
+        self._items_by_key = {}
 
         root_layout = QtWidgets.QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -43,55 +94,41 @@ class SeriesLegendWidget(QtWidgets.QWidget):
         root_layout.addWidget(title)
 
         buttons_layout = QtWidgets.QHBoxLayout()
-
         self.select_all_button = QtWidgets.QPushButton("Show all")
         self.hide_all_button = QtWidgets.QPushButton("Hide all")
-
         buttons_layout.addWidget(self.select_all_button)
         buttons_layout.addWidget(self.hide_all_button)
         root_layout.addLayout(buttons_layout)
 
-        self.scroll = QtWidgets.QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        root_layout.addWidget(self.scroll, 1)
-
-        self.content = QtWidgets.QWidget()
-        self.scroll.setWidget(self.content)
-
-        self.content_layout = QtWidgets.QVBoxLayout(self.content)
-        self.content_layout.setContentsMargins(4, 4, 4, 4)
-        self.content_layout.setSpacing(4)
-        self.content_layout.addStretch()
+        self.list_widget = QtWidgets.QListWidget()
+        self.list_widget.setAlternatingRowColors(True)
+        self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.list_widget.setUniformItemSizes(True)
+        root_layout.addWidget(self.list_widget, 1)
 
         self.select_all_button.clicked.connect(self.show_all)
         self.hide_all_button.clicked.connect(self.hide_all)
+        self.list_widget.currentItemChanged.connect(self._on_current_item_changed)
+        self.list_widget.itemChanged.connect(self._on_item_changed)
 
-        self.plot_widget.series_added.connect(self.ensure_series)
-        self.plot_widget.series_removed.connect(self.remove_series)
+    def current_key(self):
+        return self._selected_key
 
-    def ensure_series(self, key):
-        if key in self.checkboxes:
+    def _on_current_item_changed(self, current, _previous):
+        if current is None:
+            self._selected_key = None
+            self.series_selected.emit("")
             return
 
-        name = self.plot_widget.series_names.get(key, key)
-        color = self.plot_widget.color_for_key(key)
+        key = current.data(QtCore.Qt.UserRole)
+        self._selected_key = key
+        self.list_widget.scrollToItem(current, QtWidgets.QAbstractItemView.EnsureVisible)
+        self.series_selected.emit(key)
 
-        checkbox = QtWidgets.QCheckBox(name)
-        checkbox.setChecked(self.plot_widget.series_visible.get(key, True))
-        checkbox.setStyleSheet(f"color: {color};")
-        checkbox.toggled.connect(
-            lambda checked, series_key=key: self.plot_widget.set_series_visible(series_key, checked)
-        )
-
-        self.checkboxes[key] = checkbox
-        self.content_layout.insertWidget(self.content_layout.count() - 1, checkbox)
-
-    def remove_series(self, key):
-        checkbox = self.checkboxes.pop(key, None)
-        if checkbox is None:
-            return
-        checkbox.setParent(None)
-        checkbox.deleteLater()
+    def _on_item_changed(self, item):
+        key = item.data(QtCore.Qt.UserRole)
+        visible = item.checkState() == QtCore.Qt.Checked
+        self.plot_widget.set_series_visible(key, visible)
 
     def refresh_visible_series(self):
         if self.plot_widget.show_all_series:
@@ -99,60 +136,80 @@ class SeriesLegendWidget(QtWidgets.QWidget):
         else:
             keys = list(self.plot_widget.visible_series_keys())
 
+        if self._selected_key and self._selected_key in self.plot_widget.data and self._selected_key not in keys:
+            keys.append(self._selected_key)
+
         keys.sort(key=lambda k: self.plot_widget.series_score(k), reverse=True)
 
+        final_key = self._selected_key
+        if final_key not in keys:
+            final_key = keys[0] if keys else None
+
+        self._items_by_key = {}
+
+        self.list_widget.blockSignals(True)
+        self.list_widget.clear()
+
         for key in keys:
-            self.ensure_series(key)
+            name = self.plot_widget.series_names.get(key, key)
+            color = self.plot_widget.color_for_key(key)
 
-        for i, key in enumerate(keys):
-            cb = self.checkboxes.get(key)
-            if cb:
-                self.content_layout.removeWidget(cb)
-                self.content_layout.insertWidget(i, cb)
-                cb.setVisible(True)
+            item = QtWidgets.QListWidgetItem(name)
+            item.setData(QtCore.Qt.UserRole, key)
+            item.setFlags(
+                QtCore.Qt.ItemIsEnabled
+                | QtCore.Qt.ItemIsSelectable
+                | QtCore.Qt.ItemIsUserCheckable
+            )
+            item.setCheckState(
+                QtCore.Qt.Checked
+                if self.plot_widget.series_visible.get(key, True)
+                else QtCore.Qt.Unchecked
+            )
+            item.setForeground(QtGui.QColor(color))
 
-        for key, cb in self.checkboxes.items():
-            if key not in keys:
-                cb.setVisible(False)
+            self.list_widget.addItem(item)
+            self._items_by_key[key] = item
+
+        if final_key is not None and final_key in self._items_by_key:
+            self.list_widget.setCurrentItem(self._items_by_key[final_key])
+            self.list_widget.scrollToItem(
+                self._items_by_key[final_key],
+                QtWidgets.QAbstractItemView.EnsureVisible,
+            )
+
+        self.list_widget.blockSignals(False)
+
+        if final_key != self._selected_key:
+            self._selected_key = final_key
+            self.series_selected.emit(final_key or "")
 
     def show_all(self):
-        if self.plot_widget.show_all_series:
-            target_keys = self.plot_widget.data.keys()
-        else:
-            target_keys = self.plot_widget.visible_series_keys()
-
-        for key in target_keys:
-            self.ensure_series(key)
-
-        for key, checkbox in self.checkboxes.items():
-            if not checkbox.isVisible():
-                continue
-            checkbox.blockSignals(True)
-            checkbox.setChecked(True)
-            checkbox.blockSignals(False)
+        self.list_widget.blockSignals(True)
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            item.setCheckState(QtCore.Qt.Checked)
+            key = item.data(QtCore.Qt.UserRole)
             self.plot_widget.set_series_visible(key, True)
+        self.list_widget.blockSignals(False)
 
     def hide_all(self):
-        if self.plot_widget.show_all_series:
-            target_keys = self.plot_widget.data.keys()
-        else:
-            target_keys = self.plot_widget.visible_series_keys()
-
-        for key in target_keys:
-            self.ensure_series(key)
-
-        for key, checkbox in self.checkboxes.items():
-            if not checkbox.isVisible():
-                continue
-            checkbox.blockSignals(True)
-            checkbox.setChecked(False)
-            checkbox.blockSignals(False)
+        self.list_widget.blockSignals(True)
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            item.setCheckState(QtCore.Qt.Unchecked)
+            key = item.data(QtCore.Qt.UserRole)
             self.plot_widget.set_series_visible(key, False)
+        self.list_widget.blockSignals(False)
 
 
 class ProfileTab(QtWidgets.QWidget):
-    def __init__(self, profile_name, mode, max_visible_series=10, view_seconds=300, parent=None):
+    def __init__(self, base_url, profile_name, mode, max_visible_series=10, view_seconds=300, parent=None):
         super().__init__(parent)
+
+        self.base_url = base_url
+        self.profile_name = profile_name
+        self._stack_request_id = 0
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -177,8 +234,8 @@ class ProfileTab(QtWidgets.QWidget):
         controls_layout.addStretch()
         layout.addLayout(controls_layout)
 
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        layout.addWidget(splitter)
+        outer_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        layout.addWidget(outer_splitter)
 
         self.plot = PlotWidget(
             profile_name,
@@ -187,21 +244,53 @@ class ProfileTab(QtWidgets.QWidget):
             view_seconds=view_seconds,
             log_y=profile_name in LOG_SCALE_PROFILES,
         )
-        splitter.addWidget(self.plot)
+        outer_splitter.addWidget(self.plot)
 
-        self.legend = SeriesLegendWidget(self.plot)
-        self.legend.setMinimumWidth(320)
-        splitter.addWidget(self.legend)
+        right_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        outer_splitter.addWidget(right_splitter)
 
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 0)
-        splitter.setSizes([1100, 320])
+        self.series_list = SeriesListWidget(self.plot)
+        self.series_list.setMinimumWidth(360)
+        right_splitter.addWidget(self.series_list)
+
+        stack_panel = QtWidgets.QWidget()
+        stack_layout = QtWidgets.QVBoxLayout(stack_panel)
+        stack_layout.setContentsMargins(0, 0, 0, 0)
+        stack_layout.setSpacing(6)
+
+        stack_title = QtWidgets.QLabel("Stack trace")
+        stack_title.setStyleSheet("font-weight: bold;")
+        stack_layout.addWidget(stack_title)
+
+        self.stack_series_label = QtWidgets.QLabel("Серия не выбрана")
+        self.stack_series_label.setWordWrap(True)
+        stack_layout.addWidget(self.stack_series_label)
+
+        self.stack_view = QtWidgets.QPlainTextEdit()
+        self.stack_view.setReadOnly(True)
+        self.stack_view.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
+        self.stack_view.setStyleSheet(
+            "font-family: Consolas, 'Courier New', monospace; font-size: 12px;"
+        )
+        self.stack_view.setPlainText("Выбери серию справа, чтобы увидеть стектрейс.")
+        stack_layout.addWidget(self.stack_view, 1)
+
+        right_splitter.addWidget(stack_panel)
+
+        outer_splitter.setStretchFactor(0, 1)
+        outer_splitter.setStretchFactor(1, 0)
+        outer_splitter.setSizes([1100, 420])
+
+        right_splitter.setStretchFactor(0, 1)
+        right_splitter.setStretchFactor(1, 1)
+        right_splitter.setSizes([420, 320])
 
         self.follow_live_checkbox.toggled.connect(self.plot.set_follow_live)
         self.view_all_button.clicked.connect(self.plot.view_all)
         self.top_n_button.clicked.connect(self.on_show_top_n)
         self.sort_combo.currentTextChanged.connect(self.on_sort_changed)
         self.plot.manual_view_activated.connect(self._on_manual_view_activated)
+        self.series_list.series_selected.connect(self.on_series_selected)
 
     def _on_manual_view_activated(self):
         self.follow_live_checkbox.blockSignals(True)
@@ -214,6 +303,54 @@ class ProfileTab(QtWidgets.QWidget):
     def on_sort_changed(self, mode):
         self.plot.sort_mode = mode
 
+    def on_series_selected(self, key):
+        self.plot.set_selected_series(key)
+
+        if not key:
+            self.stack_series_label.setText("Серия не выбрана")
+            self.stack_view.setPlainText("Выбери серию справа, чтобы увидеть стектрейс.")
+            return
+
+        meta = self.plot.series_meta.get(key) or {}
+        func = meta.get("func", "")
+        line = meta.get("line", "")
+        inline = meta.get("inline", "")
+
+        title = func or key
+        if line:
+            title = f"{title}\n{line}"
+        if inline:
+            title = f"{title}\n{inline}"
+
+        self.stack_series_label.setText(title)
+        self.stack_view.setPlainText("Загрузка стектрейса...")
+
+        self._stack_request_id += 1
+        request_id = self._stack_request_id
+
+        thread = StackFetchThread(
+            base_url=self.base_url,
+            func=func,
+            line=line,
+            inline=inline,
+            request_id=request_id,
+            parent=self,
+        )
+        thread.loaded.connect(self._on_stack_loaded)
+        thread.failed.connect(self._on_stack_failed)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _on_stack_loaded(self, request_id, frames):
+        if request_id != self._stack_request_id:
+            return
+        self.stack_view.setPlainText(format_stack_frames(frames))
+
+    def _on_stack_failed(self, request_id, error_text):
+        if request_id != self._stack_request_id:
+            return
+        self.stack_view.setPlainText(f"Не удалось загрузить стектрейс.\n\n{error_text}")
+
 
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, base_url):
@@ -221,7 +358,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.base_url = base_url
         self.setWindowTitle("pprof viewer")
-        self.resize(1400, 1000)
+        self.resize(1600, 1000)
 
         root = QtWidgets.QWidget()
         self.setCentralWidget(root)
@@ -257,6 +394,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         for profile in PROFILES:
             tab = ProfileTab(
+                base_url=base_url,
                 profile_name=profile,
                 mode=PROFILE_MODE[profile],
                 max_visible_series=max_visible_by_profile[profile],
@@ -280,7 +418,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         key = f"{ev['func']}|{ev['line']}|{ev.get('inline', '')}"
 
-        display_name = ev["func"]
+        display_name = f"{ev['func']} — {ev['line']}"
         if ev.get("inline"):
             display_name += " (inl)"
 
@@ -289,6 +427,12 @@ class MainWindow(QtWidgets.QMainWindow):
             ts=ev["_ts"],
             value=ev["flat"],
             display_name=display_name,
+            meta={
+                "func": ev["func"],
+                "line": ev["line"],
+                "inline": ev.get("inline", ""),
+                "profile": ev["_type"],
+            },
         )
 
     def refresh(self):
@@ -296,7 +440,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for tab_index in range(self.tabs.count()):
             tab = self.tabs.widget(tab_index)
             tab.plot.refresh(now)
-            tab.legend.refresh_visible_series()
+            tab.series_list.refresh_visible_series()
 
     def closeEvent(self, event):
         self.client.stop()

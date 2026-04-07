@@ -9,6 +9,7 @@ def get_stack(base_url, func, line, inline):
             "line": line,
             "inline": inline,
         },
+        timeout=10,
     )
     resp.raise_for_status()
-    return resp.text
+    return resp.json()
