@@ -278,7 +278,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if plot is None:
             return
 
-        key = f"{ev['line']}|{ev.get('inline', '')}"
+        key = f"{ev['func']}|{ev['line']}|{ev.get('inline', '')}"
 
         display_name = ev["func"]
         if ev.get("inline"):

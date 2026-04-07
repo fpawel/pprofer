@@ -1,12 +1,14 @@
 import requests
 
 
-def get_stack(base_url, profile, line, inline):
-    return requests.get(
+def get_stack(base_url, func, line, inline):
+    resp = requests.get(
         f"{base_url}/stack",
         params={
-            "profile": profile,
+            "func": func,
             "line": line,
             "inline": inline,
         },
-    ).text
+    )
+    resp.raise_for_status()
+    return resp.text
