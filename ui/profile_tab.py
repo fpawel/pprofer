@@ -31,6 +31,15 @@ class ProfileTab(QtWidgets.QWidget):
         # Нужен, чтобы не показывать устаревший ответ, если пользователь успел выбрать другую серию.
         self._stack_request_id = 0
 
+        # При закрытии вкладки/окна ставим этот флаг, чтобы игнорировать поздние сигналы
+        # и не запускать новые фоновые запросы.
+        self._is_closing = False
+
+        # Держим ссылки на активные потоки stack trace.
+        # Без этого ими неудобно управлять при закрытии окна.
+        self._stack_threads = set()
+        self._current_stack_thread = None
+
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
@@ -154,6 +163,9 @@ class ProfileTab(QtWidgets.QWidget):
 
     def set_labels(self, labels):
         """Показывает labels, которые пришли от backend."""
+        if self._is_closing:
+            return
+
         if not labels:
             self.labels_value.clear()
             self.labels_value.setPlaceholderText("Waiting for labels...")
@@ -180,6 +192,60 @@ class ProfileTab(QtWidgets.QWidget):
         """Меняет правило сортировки серий на графике и в списке."""
         self.plot.sort_mode = mode
 
+    def _register_stack_thread(self, thread):
+        """
+        Сохраняет поток в наборе активных и вешает cleanup-обработчики.
+
+        Это отдельный метод, чтобы логика запуска stack thread не разрасталась внутри on_series_selected().
+        """
+        self._stack_threads.add(thread)
+        self._current_stack_thread = thread
+
+        thread.finished.connect(lambda thr=thread: self._on_stack_thread_finished(thr))
+        thread.finished.connect(thread.deleteLater)
+
+    def _on_stack_thread_finished(self, thread):
+        """Убирает завершившийся поток из локального списка активных."""
+        self._stack_threads.discard(thread)
+        if self._current_stack_thread is thread:
+            self._current_stack_thread = None
+
+    def _cancel_current_stack_request(self):
+        """
+        Останавливает активную загрузку stack trace, если она ещё идёт.
+
+        Это нужно и при быстром переключении серии, и при закрытии окна.
+        """
+        thread = self._current_stack_thread
+        if thread is None:
+            return
+
+        self._current_stack_thread = None
+        thread.stop()
+
+    def shutdown(self, wait_ms=2000):
+        """
+        Корректно останавливает все фоновые stack threads этой вкладки.
+
+        wait_ms — максимум ожидания на один поток. Обычно поток завершается
+        быстро, потому что stop() закрывает его Session.
+        """
+        self._is_closing = True
+
+        # Все ответы, которые уже летят из старых запросов, считаем устаревшими.
+        self._stack_request_id += 1
+
+        # Сначала просим все потоки завершиться.
+        for thread in list(self._stack_threads):
+            thread.stop()
+
+        # Потом ждём их завершения, чтобы не уничтожить вкладку раньше времени.
+        for thread in list(self._stack_threads):
+            thread.wait(wait_ms)
+
+        self._stack_threads.clear()
+        self._current_stack_thread = None
+
     def on_series_selected(self, key):
         """
         Реагирует на выбор серии справа.
@@ -189,7 +255,14 @@ class ProfileTab(QtWidgets.QWidget):
         - обновляем заголовок блока stack trace,
         - запускаем загрузку stack trace.
         """
+        if self._is_closing:
+            return
+
         self.plot.set_selected_series(key)
+
+        # Предыдущий запрос stack trace больше не нужен:
+        # либо серия меняется, либо выбор снимается.
+        self._cancel_current_stack_request()
 
         if not key:
             self.stack_series_label.setText(format_series_header_html("", ""))
@@ -217,17 +290,21 @@ class ProfileTab(QtWidgets.QWidget):
         )
         thread.loaded.connect(self._on_stack_loaded)
         thread.failed.connect(self._on_stack_failed)
-        thread.finished.connect(thread.deleteLater)
+        self._register_stack_thread(thread)
         thread.start()
 
     def _on_stack_loaded(self, request_id, frames):
         """Показывает stack trace, если это ответ на актуальный, а не устаревший запрос."""
+        if self._is_closing:
+            return
         if request_id != self._stack_request_id:
             return
         self.stack_view.setPlainText(format_stack_frames(frames))
 
     def _on_stack_failed(self, request_id, error_text):
         """Показывает ошибку загрузки stack trace, если запрос ещё актуален."""
+        if self._is_closing:
+            return
         if request_id != self._stack_request_id:
             return
         self.stack_view.setPlainText(f"Failed to load stack trace.\n\n{error_text}")
@@ -269,7 +346,10 @@ def format_series_header_html(func, inline):
     if not func:
         return '<span style="color:#777777; font-size:15px;">Серия не выбрана</span>'
 
-    blocks = [f"""
+    blocks = []
+
+    blocks.append(
+        f"""
         <div style="
             font-size: 22px;
             font-weight: 700;
@@ -278,7 +358,8 @@ def format_series_header_html(func, inline):
         ">
             {escape(func)}
         </div>
-        """]
+        """
+    )
 
     if inline:
         blocks.append(

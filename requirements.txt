@@ -2,3 +2,4 @@ PyQt5
 pyqtgraph
 humanize
 requests
+rich

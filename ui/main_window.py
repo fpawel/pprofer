@@ -46,6 +46,8 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
 
         self.base_url = base_url
+        self._is_closing = False
+
         self.setWindowTitle("pprof viewer")
         self.resize(1600, 1000)
 
@@ -120,6 +122,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         ev приходит уже распарсенным словарём с полями от backend.
         """
+        if self._is_closing:
+            return
+
         plot = self.plots.get(ev["_type"])
         if plot is None:
             return
@@ -152,17 +157,47 @@ class MainWindow(QtWidgets.QMainWindow):
         now сейчас не используется внутри PlotWidget, но сигнатура оставлена удобной:
         если позже понадобится age-based pruning, время уже будет под рукой.
         """
+        if self._is_closing:
+            return
+
         now = time.time()
         for tab_index in range(self.tabs.count()):
             tab = self.tabs.widget(tab_index)
             tab.plot.refresh(now)
             tab.series_list.refresh_visible_series()
 
+    def _stop_labels_thread(self, wait_ms=2000):
+        """Останавливает текущий labels-thread и ждёт его завершения."""
+        thread = self.labels_thread
+        self.labels_thread = None
+
+        if thread is None:
+            return
+
+        thread.stop()
+        thread.wait(wait_ms)
+
     def closeEvent(self, event):
         """
         Корректно останавливает фоновые механизмы перед закрытием окна.
+
+        Порядок важен:
+        1. перестаём запускать новые действия по таймерам;
+        2. останавливаем сетевые worker-ы;
+        3. дожидаемся их завершения;
+        4. только потом даём Qt уничтожать дерево виджетов.
         """
+        self._is_closing = True
+
+        self.timer.stop()
+        self.labels_timer.stop()
+
         self.client.stop()
+        self._stop_labels_thread()
+
+        for tab in self.profile_tabs.values():
+            tab.shutdown()
+
         self.client.wait(2000)
         super().closeEvent(event)
 
@@ -170,6 +205,9 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         Запускает фоновую загрузку labels, если сейчас ещё нет активного запроса.
         """
+        if self._is_closing:
+            return
+
         if self.labels_thread is not None and self.labels_thread.isRunning():
             return
 
@@ -185,6 +223,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         После первого успешного получения labels таймер можно выключить.
         """
+        if self._is_closing:
+            return
+
         if not labels:
             return
 
@@ -199,7 +240,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         labels не критичны для основного сценария, поэтому просто дождёмся следующей попытки.
         """
-        pass
+        if self._is_closing:
+            return
 
     def on_labels_thread_finished(self):
         """Сбрасывает ссылку на завершившийся labels-thread."""

@@ -1,26 +1,40 @@
 import requests
 
 
-def get_stack(base_url, func, line, inline):
+def _get_requester(session=None):
+    """
+    Возвращает объект с методом .get(...).
+
+    Если передан requests.Session, используем его:
+    это позволяет потоку закрыть сессию из stop() и аккуратно прервать запрос.
+    """
+    return session if session is not None else requests
+
+
+def get_stack(base_url, func, line, inline, session=None, timeout=(3, 10)):
     """Запрашивает stack trace для выбранной серии."""
-    resp = requests.get(
+    requester = _get_requester(session)
+
+    resp = requester.get(
         f"{base_url}/stack",
         params={
             "func": func,
             "line": line,
             "inline": inline,
         },
-        timeout=10,
+        timeout=timeout,
     )
     resp.raise_for_status()
     return resp.json()
 
 
-def get_labels(base_url):
+def get_labels(base_url, session=None, timeout=(3, 5)):
     """Запрашивает человекочитаемые labels, которые backend вычислил для профиля."""
-    resp = requests.get(
+    requester = _get_requester(session)
+
+    resp = requester.get(
         f"{base_url}/labels",
-        timeout=5,
+        timeout=timeout,
     )
     resp.raise_for_status()
 

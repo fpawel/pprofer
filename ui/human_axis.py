@@ -13,7 +13,7 @@ class HumanAxis(pg.AxisItem):
     """
 
     def __init__(self, orientation, mode="bytes", log_scale=False):
-        """Запоминает режим форматирования и используется ли логарифмическая шкала."""
+        """Запоминает режим форматирования и то, используется ли логарифмическая шкала."""
         super().__init__(orientation=orientation)
         self.mode = mode
         self.log_scale = log_scale
