@@ -1,6 +1,6 @@
 from html import escape
 
-from PyQt5 import QtWidgets, QtCore, QtGui
+from PyQt5 import QtCore, QtGui, QtWidgets
 
 from ui.plot_widget import PlotWidget
 from ui.series_list_widget import SeriesListWidget
@@ -8,12 +8,27 @@ from ui.stack_fetch_thread import StackFetchThread
 from ui.stack_trace_highlighter import StackTraceHighlighter
 
 
+# Для этих профилей значения на оси Y удобнее смотреть в логарифмической шкале:
+# пики могут отличаться на порядки, и в обычной шкале мелкие серии будут "прилипать" к нулю.
+LOG_SCALE_PROFILES = {"heap", "allocs", "profile", "block", "mutex"}
+
+
 class ProfileTab(QtWidgets.QWidget):
+    """
+    Одна вкладка профиля: график + список серий + stack trace.
+
+    Пример: вкладка heap или goroutine.
+    """
+
     def __init__(self, base_url, profile_name, mode, max_visible_series=10, view_seconds=300, parent=None):
+        """Собирает весь интерфейс конкретной вкладки профиля и связывает сигналы."""
         super().__init__(parent)
 
         self.base_url = base_url
         self.profile_name = profile_name
+
+        # Номер последнего запроса stack trace.
+        # Нужен, чтобы не показывать устаревший ответ, если пользователь успел выбрать другую серию.
         self._stack_request_id = 0
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -49,6 +64,8 @@ class ProfileTab(QtWidgets.QWidget):
         controls_layout.addStretch()
         layout.addLayout(controls_layout)
 
+        # Главный splitter делит вкладку на левую часть (график)
+        # и правую (список серий + stack trace).
         outer_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         layout.addWidget(outer_splitter)
 
@@ -61,6 +78,7 @@ class ProfileTab(QtWidgets.QWidget):
         )
         outer_splitter.addWidget(self.plot)
 
+        # На правой стороне второй splitter: сверху список серий, снизу stack trace.
         right_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         outer_splitter.addWidget(right_splitter)
 
@@ -96,6 +114,8 @@ class ProfileTab(QtWidgets.QWidget):
         self.stack_view.setReadOnly(True)
         self.stack_view.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
 
+        # Для стектрейса нужен моноширинный шрифт,
+        # иначе пути и номера строк будут читаться хуже.
         font = QtGui.QFont("Consolas")
         font.setStyleHint(QtGui.QFont.Monospace)
         font.setPointSize(14)
@@ -116,6 +136,7 @@ class ProfileTab(QtWidgets.QWidget):
 
         right_splitter.addWidget(stack_panel)
 
+        # Управляем стартовыми размерами сплиттеров.
         outer_splitter.setStretchFactor(0, 1)
         outer_splitter.setStretchFactor(1, 0)
         outer_splitter.setSizes([1100, 440])
@@ -132,6 +153,7 @@ class ProfileTab(QtWidgets.QWidget):
         self.series_list.series_selected.connect(self.on_series_selected)
 
     def set_labels(self, labels):
+        """Показывает labels, которые пришли от backend."""
         if not labels:
             self.labels_value.clear()
             self.labels_value.setPlaceholderText("Waiting for labels...")
@@ -140,22 +162,38 @@ class ProfileTab(QtWidgets.QWidget):
         self.labels_value.setText(", ".join(labels))
 
     def _on_manual_view_activated(self):
+        """
+        Синхронизирует чекбокс с состоянием графика.
+
+        Когда график сам сообщил, что пользователь ушёл в manual view,
+        чекбокс "Follow live" нужно снять, но без повторного сигнала наружу.
+        """
         self.follow_live_checkbox.blockSignals(True)
         self.follow_live_checkbox.setChecked(False)
         self.follow_live_checkbox.blockSignals(False)
 
     def on_show_top_n(self):
+        """Обработчик кнопки Top N."""
         self.plot.show_top_n()
 
     def on_sort_changed(self, mode):
+        """Меняет правило сортировки серий на графике и в списке."""
         self.plot.sort_mode = mode
 
     def on_series_selected(self, key):
+        """
+        Реагирует на выбор серии справа.
+
+        Здесь одновременно:
+        - подсвечиваем линию на графике,
+        - обновляем заголовок блока stack trace,
+        - запускаем загрузку stack trace.
+        """
         self.plot.set_selected_series(key)
 
         if not key:
             self.stack_series_label.setText(format_series_header_html("", ""))
-            self.stack_view.setPlainText("Выбери серию справа, чтобы увидеть стектрейс.")
+            self.stack_view.setPlainText("Select a series on the right to see the stack trace.")
             return
 
         meta = self.plot.series_meta.get(key) or {}
@@ -164,7 +202,7 @@ class ProfileTab(QtWidgets.QWidget):
         inline = meta.get("inline", "")
 
         self.stack_series_label.setText(format_series_header_html(func, inline))
-        self.stack_view.setPlainText("Загрузка стектрейса...")
+        self.stack_view.setPlainText("Loading stack trace...")
 
         self._stack_request_id += 1
         request_id = self._stack_request_id
@@ -183,19 +221,28 @@ class ProfileTab(QtWidgets.QWidget):
         thread.start()
 
     def _on_stack_loaded(self, request_id, frames):
+        """Показывает stack trace, если это ответ на актуальный, а не устаревший запрос."""
         if request_id != self._stack_request_id:
             return
         self.stack_view.setPlainText(format_stack_frames(frames))
 
     def _on_stack_failed(self, request_id, error_text):
+        """Показывает ошибку загрузки stack trace, если запрос ещё актуален."""
         if request_id != self._stack_request_id:
             return
-        self.stack_view.setPlainText(f"Не удалось загрузить стектрейс.\n\n{error_text}")
+        self.stack_view.setPlainText(f"Failed to load stack trace.\n\n{error_text}")
 
 
 def format_stack_frames(frames):
+    """
+    Превращает список frame-ов в простой текст для QPlainTextEdit.
+
+    Каждый кадр занимает одну-две строки:
+    - номер + имя функции
+    - путь к файлу и номер строки (если есть)
+    """
     if not frames:
-        return "Стектрейс недоступен."
+        return "Stacktrace is unavailable."
 
     lines = []
     for index, frame in enumerate(frames, 1):
@@ -214,13 +261,15 @@ def format_stack_frames(frames):
 
 
 def format_series_header_html(func, inline):
+    """
+    Собирает HTML для плашки над stack trace.
+
+    Там крупно показывается имя функции и, при наличии, inline-метка.
+    """
     if not func:
         return '<span style="color:#777777; font-size:15px;">Серия не выбрана</span>'
 
-    blocks = []
-
-    blocks.append(
-        f"""
+    blocks = [f"""
         <div style="
             font-size: 22px;
             font-weight: 700;
@@ -229,8 +278,7 @@ def format_series_header_html(func, inline):
         ">
             {escape(func)}
         </div>
-        """
-    )
+        """]
 
     if inline:
         blocks.append(
@@ -252,6 +300,3 @@ def format_series_header_html(func, inline):
         )
 
     return "".join(blocks)
-
-
-LOG_SCALE_PROFILES = {"heap", "allocs", "profile", "block", "mutex"}

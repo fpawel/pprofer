@@ -1,10 +1,18 @@
-from PyQt5 import QtWidgets, QtCore, QtGui
+from PyQt5 import QtCore, QtGui, QtWidgets
 
 
 class SeriesListWidget(QtWidgets.QWidget):
+    """
+    Правая панель со списком серий.
+
+    Она не хранит свои данные отдельно, а каждый раз читает актуальное состояние
+    из PlotWidget. Это упрощает синхронизацию между списком и графиком.
+    """
+
     series_selected = QtCore.pyqtSignal(str)
 
     def __init__(self, plot_widget, parent=None):
+        """Привязывает список к конкретному PlotWidget."""
         super().__init__(parent)
         self.plot_widget = plot_widget
         self._selected_key = None
@@ -45,9 +53,11 @@ class SeriesListWidget(QtWidgets.QWidget):
         self.list_widget.itemChanged.connect(self._on_item_changed)
 
     def current_key(self):
+        """Возвращает ключ выбранной серии или None."""
         return self._selected_key
 
     def _on_current_item_changed(self, current, _previous):
+        """Реагирует на смену выделенного элемента списка."""
         if current is None:
             self._selected_key = None
             self.series_selected.emit("")
@@ -55,20 +65,31 @@ class SeriesListWidget(QtWidgets.QWidget):
 
         key = current.data(QtCore.Qt.UserRole)
         self._selected_key = key
+
+        # Держим выбранный элемент в видимой области списка.
         self.list_widget.scrollToItem(current, QtWidgets.QAbstractItemView.EnsureVisible)
         self.series_selected.emit(key)
 
     def _on_item_changed(self, item):
+        """Реагирует на изменение галочки у элемента списка."""
         key = item.data(QtCore.Qt.UserRole)
         visible = item.checkState() == QtCore.Qt.Checked
         self.plot_widget.set_series_visible(key, visible)
 
     def refresh_visible_series(self):
+        """
+        Полностью пересобирает список видимых/активных серий.
+
+        Здесь источник истины — PlotWidget:
+        список просто отражает его текущее состояние.
+        """
         if self.plot_widget.show_all_series:
             keys = list(self.plot_widget.data.keys())
         else:
             keys = list(self.plot_widget.visible_series_keys())
 
+        # Если пользователь выбрал серию, оставляем её в списке,
+        # даже если она уже не входит в top N.
         if self._selected_key and self._selected_key in self.plot_widget.data and self._selected_key not in keys:
             keys.append(self._selected_key)
 
@@ -80,6 +101,8 @@ class SeriesListWidget(QtWidgets.QWidget):
 
         self._items_by_key = {}
 
+        # На время полной пересборки отключаем сигналы,
+        # чтобы не вызвать лишние реакции на промежуточные состояния.
         self.list_widget.blockSignals(True)
         self.list_widget.clear()
 
@@ -122,6 +145,7 @@ class SeriesListWidget(QtWidgets.QWidget):
             self.series_selected.emit(final_key or "")
 
     def show_all(self):
+        """Ставит галочки у всех элементов списка и показывает все активные серии."""
         self.list_widget.blockSignals(True)
         for i in range(self.list_widget.count()):
             item = self.list_widget.item(i)
@@ -131,6 +155,7 @@ class SeriesListWidget(QtWidgets.QWidget):
         self.list_widget.blockSignals(False)
 
     def hide_all(self):
+        """Снимает галочки у всех элементов списка и скрывает все активные серии."""
         self.list_widget.blockSignals(True)
         for i in range(self.list_widget.count()):
             item = self.list_widget.item(i)

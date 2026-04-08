@@ -2,10 +2,11 @@ import time
 
 from PyQt5 import QtCore, QtWidgets
 
+from .labels_fetch_thread import LabelsFetchThread
 from .profile_tab import ProfileTab
 from .sse import SseClient
-from .labels_fetch_thread import LabelsFetchThread
 
+# Набор профилей, которые UI показывает отдельными вкладками.
 PROFILES = [
     "heap",
     "goroutine",
@@ -16,6 +17,7 @@ PROFILES = [
     "threadcreate",
 ]
 
+# Для каждого профиля выбираем способ форматирования оси Y.
 PROFILE_MODE = {
     "heap": "bytes",
     "allocs": "bytes",
@@ -28,7 +30,19 @@ PROFILE_MODE = {
 
 
 class MainWindow(QtWidgets.QMainWindow):
+    """
+    Главное окно приложения.
+
+    Его роль:
+    - создать вкладки по профилям,
+    - принять live-события из SSE,
+    - разложить точки по нужным графикам,
+    - периодически инициировать refresh UI,
+    - один раз подтянуть labels.
+    """
+
     def __init__(self, base_url):
+        """Создаёт всё дерево виджетов и запускает фоновые механизмы UI."""
         super().__init__()
 
         self.base_url = base_url
@@ -45,6 +59,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs = QtWidgets.QTabWidget()
         root_layout.addWidget(self.tabs)
 
+        # Быстрый доступ к plot/tab по имени профиля.
         self.plots = {}
         self.profile_tabs = {}
 
@@ -80,14 +95,19 @@ class MainWindow(QtWidgets.QMainWindow):
             self.plots[profile] = tab.plot
             self.profile_tabs[profile] = tab
 
+        # SSE-клиент поставляет live-данные по всем профилям.
         self.client = SseClient(base_url, PROFILES)
         self.client.event.connect(self.on_event)
         self.client.start()
 
+        # Таймер обновляет отрисовку графиков и правых списков.
+        # Данные в графики добавляются сразу по событию, а redraw делаем пачкой раз в секунду.
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.refresh)
         self.timer.start(1000)
 
+        # Labels обычно приходят один раз и потом почти не меняются.
+        # Поэтому периодически спрашиваем backend, пока не получим непустой ответ.
         self.labels_thread = None
         self.labels_timer = QtCore.QTimer(self)
         self.labels_timer.timeout.connect(self.fetch_labels)
@@ -95,10 +115,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fetch_labels()
 
     def on_event(self, ev):
+        """
+        Принимает одно SSE-событие и добавляет точку на соответствующий график.
+
+        ev приходит уже распарсенным словарём с полями от backend.
+        """
         plot = self.plots.get(ev["_type"])
         if plot is None:
             return
 
+        # key должен однозначно описывать серию.
+        # Здесь серия определяется функцией, строкой и inline-меткой.
         key = f"{ev['func']}|{ev['line']}|{ev.get('inline', '')}"
 
         display_name = ev["func"]
@@ -119,6 +146,12 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def refresh(self):
+        """
+        Обновляет все вкладки.
+
+        now сейчас не используется внутри PlotWidget, но сигнатура оставлена удобной:
+        если позже понадобится age-based pruning, время уже будет под рукой.
+        """
         now = time.time()
         for tab_index in range(self.tabs.count()):
             tab = self.tabs.widget(tab_index)
@@ -126,11 +159,17 @@ class MainWindow(QtWidgets.QMainWindow):
             tab.series_list.refresh_visible_series()
 
     def closeEvent(self, event):
+        """
+        Корректно останавливает фоновые механизмы перед закрытием окна.
+        """
         self.client.stop()
         self.client.wait(2000)
         super().closeEvent(event)
 
     def fetch_labels(self):
+        """
+        Запускает фоновую загрузку labels, если сейчас ещё нет активного запроса.
+        """
         if self.labels_thread is not None and self.labels_thread.isRunning():
             return
 
@@ -141,6 +180,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.labels_thread.start()
 
     def on_labels_loaded(self, labels):
+        """
+        Применяет labels ко всем вкладкам.
+
+        После первого успешного получения labels таймер можно выключить.
+        """
         if not labels:
             return
 
@@ -150,7 +194,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.labels_timer.stop()
 
     def on_labels_failed(self, _error):
+        """
+        Ошибку намеренно игнорируем.
+
+        labels не критичны для основного сценария, поэтому просто дождёмся следующей попытки.
+        """
         pass
 
     def on_labels_thread_finished(self):
+        """Сбрасывает ссылку на завершившийся labels-thread."""
         self.labels_thread = None

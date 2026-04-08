@@ -7,6 +7,8 @@ from PyQt5 import QtCore
 from ui.human_axis import HumanAxis
 from ui.time_axis import TimeAxis
 
+# Небольшая фиксированная палитра для серий.
+# Цвет закрепляется за key и потом переиспользуется.
 SERIES_COLORS = [
     "#1f77b4",
     "#ff7f0e",
@@ -22,6 +24,15 @@ SERIES_COLORS = [
 
 
 class PlotWidget(pg.PlotWidget):
+    """
+    График, который хранит live-данные по сериям и управляет их отображением.
+
+    Внутри есть три важных слоя:
+    1. self.data            — все накопленные точки по ключу серии
+    2. self.active_keys     — какие серии сейчас вообще присутствуют на графике
+    3. self.series_visible  — какие серии пользователь явно скрыл/показал
+    """
+
     series_added = QtCore.pyqtSignal(str)
     series_removed = QtCore.pyqtSignal(str)
     manual_view_activated = QtCore.pyqtSignal()
@@ -34,6 +45,12 @@ class PlotWidget(pg.PlotWidget):
         view_seconds=300,
         log_y=False,
     ):
+        """
+        Создаёт график с кастомными осями.
+
+        mode влияет только на формат подписей оси Y.
+        log_y переводит Y в логарифмический режим.
+        """
         axis = {
             "left": HumanAxis(orientation="left", mode=mode, log_scale=log_y),
             "bottom": TimeAxis(orientation="bottom"),
@@ -44,10 +61,15 @@ class PlotWidget(pg.PlotWidget):
         self.view_seconds = view_seconds
         self.min_x_padding_seconds = 1.0
 
+        # follow_live=True  -> X-окно автоматически едет вправо за новыми данными
+        # show_all_series=True -> на графике рисуем вообще все известные серии
         self.follow_live = True
         self.show_all_series = False
         self.sort_mode = "last"
         self.log_y = log_y
+
+        # Когда мы сами меняем диапазон X/Y программно,
+        # не хотим воспринимать это как ручное действие пользователя.
         self._ignore_manual_range_signal = False
 
         self.setBackground("w")
@@ -58,6 +80,7 @@ class PlotWidget(pg.PlotWidget):
         if self.log_y:
             self.setLogMode(y=True)
 
+        # Делаем оси контрастными на белом фоне.
         left_axis = self.getAxis("left")
         bottom_axis = self.getAxis("bottom")
         left_axis.setTextPen(pg.mkPen("k"))
@@ -65,9 +88,17 @@ class PlotWidget(pg.PlotWidget):
         left_axis.setPen(pg.mkPen("k"))
         bottom_axis.setPen(pg.mkPen("k"))
 
+        # data[key] = [(timestamp, value), ...]
         self.data = defaultdict(list)
+
+        # Небольшие агрегаты, чтобы быстро ранжировать серии,
+        # не пересчитывая всё заново по всем точкам.
         self.series_stats = {}
+
+        # curves[key] = объект линии на графике
         self.curves = {}
+
+        # Здесь хранится всё, что связано с отображением и выбором.
         self.series_colors = {}
         self.series_visible = {}
         self.series_names = {}
@@ -79,6 +110,12 @@ class PlotWidget(pg.PlotWidget):
         vb.sigRangeChangedManually.connect(self._on_manual_range_changed)
 
     def _on_manual_range_changed(self, *args):
+        """
+        Вызывается, когда пользователь руками двигает/зумит график.
+
+        После такого действия отключаем follow_live, чтобы UI
+        не "боролся" с пользователем и не возвращал график назад.
+        """
         if self._ignore_manual_range_signal:
             return
         if self.follow_live:
@@ -86,31 +123,49 @@ class PlotWidget(pg.PlotWidget):
             self.manual_view_activated.emit()
 
     def set_follow_live(self, enabled: bool):
+        """Включает/выключает автопрокрутку по оси X за новыми данными."""
         self.follow_live = enabled
         if enabled:
+            # При возвращении в live-режим снова показываем top N,
+            # а не "все серии", иначе график быстро захламится.
             self.show_all_series = False
             self.update_x_range()
 
     def set_show_all_series(self, enabled: bool):
+        """Переключает режим отображения всех известных серий."""
         self.show_all_series = enabled
 
     def show_top_n(self):
+        """Отключает live-follow и оставляет режим показа только top N серий."""
         self.follow_live = False
         self.show_all_series = False
         self.manual_view_activated.emit()
 
     def set_selected_series(self, key):
+        """Запоминает выбранную серию и визуально выделяет её более толстой линией."""
         self.selected_key = key or None
         for series_key in self.curves.keys():
             self._update_curve_style(series_key)
 
     def color_for_key(self, key):
+        """
+        Возвращает цвет серии.
+
+        Цвет назначается один раз при первом появлении key и дальше остаётся тем же.
+        """
         if key not in self.series_colors:
             idx = len(self.series_colors) % len(SERIES_COLORS)
             self.series_colors[key] = SERIES_COLORS[idx]
         return self.series_colors[key]
 
     def add_point(self, key, ts, value, display_name=None, meta=None):
+        """
+        Добавляет новую точку в серию.
+
+        key — внутренний идентификатор серии.
+        display_name — подпись для списка/легенды.
+        meta — всё, что потом пригодится при запросе stack trace.
+        """
         self.data[key].append((ts, value))
 
         stats = self.series_stats.get(key)
@@ -129,6 +184,7 @@ class PlotWidget(pg.PlotWidget):
                 stats["max"] = value
 
         if key not in self.series_visible:
+            # Новую серию по умолчанию показываем.
             self.series_visible[key] = True
         if display_name:
             self.series_names[key] = display_name
@@ -136,6 +192,7 @@ class PlotWidget(pg.PlotWidget):
             self.series_meta[key] = meta
 
     def set_series_visible(self, key, visible):
+        """Показывает или скрывает конкретную серию."""
         self.series_visible[key] = visible
         curve = self.curves.get(key)
         if curve is not None:
@@ -144,6 +201,13 @@ class PlotWidget(pg.PlotWidget):
             self.update_x_range()
 
     def series_score(self, key):
+        """
+        Считает "вес" серии для сортировки.
+
+        last — по последнему значению
+        avg  — по среднему
+        max  — по максимуму
+        """
         stats = self.series_stats.get(key)
         if not stats or stats["count"] == 0:
             return 0
@@ -160,6 +224,7 @@ class PlotWidget(pg.PlotWidget):
         return stats["last"]
 
     def top_series_keys(self):
+        """Возвращает ключи top N серий по текущему правилу сортировки."""
         ranked = []
         for key, points in self.data.items():
             if not points:
@@ -169,9 +234,15 @@ class PlotWidget(pg.PlotWidget):
         return [key for _, key in ranked[: self.max_visible_series]]
 
     def visible_series_keys(self):
+        """
+        Возвращает активные серии в порядке убывания их веса.
+
+        Это используется, например, правой панелью со списком серий.
+        """
         return sorted(self.active_keys, key=lambda k: self.series_score(k), reverse=True)
 
     def _create_curve(self, key):
+        """Создаёт объект линии pyqtgraph для серии, если её ещё нет на графике."""
         color = self.color_for_key(key)
         pen = pg.mkPen(color=color, width=2)
         name = self.series_names.get(key, key)
@@ -188,11 +259,13 @@ class PlotWidget(pg.PlotWidget):
         self._update_curve_style(key)
 
     def _remove_curve(self, key):
+        """Удаляет линию серии с графика, но не удаляет исторические данные."""
         curve = self.curves.pop(key, None)
         if curve is not None:
             self.removeItem(curve)
 
     def _update_curve_style(self, key):
+        """Обновляет визуальный стиль линии, например толщину выбранной серии."""
         curve = self.curves.get(key)
         if curve is None:
             return
@@ -205,6 +278,11 @@ class PlotWidget(pg.PlotWidget):
         curve.setZValue(10 if is_selected else 0)
 
     def _visible_points_bounds(self):
+        """
+        Ищет минимальный и максимальный X среди активных и видимых серий.
+
+        Эти значения нужны, чтобы корректно двигать live-окно по оси времени.
+        """
         min_x = None
         max_x = None
 
@@ -227,6 +305,13 @@ class PlotWidget(pg.PlotWidget):
         return min_x, max_x
 
     def update_x_range(self):
+        """
+        Подстраивает окно просмотра по X, если включён follow_live.
+
+        Логика такая:
+        - если данных мало, показываем их все с небольшим отступом;
+        - если данных уже много, держим справа последние view_seconds секунд.
+        """
         if not self.follow_live:
             return
 
@@ -237,6 +322,8 @@ class PlotWidget(pg.PlotWidget):
         self._ignore_manual_range_signal = True
         try:
             if max_x <= min_x:
+                # Когда есть одна точка или все точки на одном timestamp,
+                # иначе диапазон будет нулевой и график "схлопнется".
                 left = min_x - self.min_x_padding_seconds
                 right = max_x + self.min_x_padding_seconds
                 self.setXRange(left, right, padding=0)
@@ -257,6 +344,12 @@ class PlotWidget(pg.PlotWidget):
             self._ignore_manual_range_signal = False
 
     def view_all(self):
+        """
+        Показывает все известные серии и весь накопленный диапазон X/Y.
+
+        В этом режиме follow_live выключен: пользователь явно попросил
+        обзор всей истории, а не "живое окно справа".
+        """
         self.follow_live = False
         self.show_all_series = True
         self.manual_view_activated.emit()
@@ -306,6 +399,7 @@ class PlotWidget(pg.PlotWidget):
             self.setXRange(min_x, max_x, padding=0.02)
 
             if self.log_y:
+                # Для логарифмической шкалы значения должны быть > 0.
                 min_y = max(min_y, 1)
                 max_y = max(max_y, min_y * 1.01)
 
@@ -328,11 +422,22 @@ class PlotWidget(pg.PlotWidget):
             self._ignore_manual_range_signal = False
 
     def refresh(self, _now):
+        """
+        Главный метод перерисовки графика.
+
+        На каждом тике:
+        1. выбираем, какие серии должны быть активны сейчас;
+        2. создаём/удаляем линии;
+        3. обновляем данные кривых;
+        4. подстраиваем диапазоны осей.
+        """
         if self.show_all_series:
             new_active_keys = set(self.data.keys())
         else:
             new_active_keys = set(self.top_series_keys())
 
+        # Выбранную пользователем серию не выбрасываем из графика,
+        # даже если она уже не входит в текущий top N.
         if self.selected_key and self.selected_key in self.data:
             new_active_keys.add(self.selected_key)
 
@@ -365,4 +470,6 @@ class PlotWidget(pg.PlotWidget):
 
         self.update_x_range()
         if self.follow_live:
+            # Y-ось в live-режиме удобно автоподстраивать,
+            # иначе новые пики могут уезжать за границы.
             self.getViewBox().enableAutoRange(axis="y")

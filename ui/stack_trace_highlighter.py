@@ -2,7 +2,18 @@ from PyQt5 import QtGui
 
 
 class StackTraceHighlighter(QtGui.QSyntaxHighlighter):
+    """
+    Подсветка стектрейса в QPlainTextEdit.
+
+    Делает:
+    - функцию в кадре заметной,
+    - путь к файлу более спокойным,
+    - номер строки акцентным,
+    - первый кадр слегка подсвеченным фоном.
+    """
+
     def __init__(self, document):
+        """Готовит набор форматов, которые потом применяются построчно."""
         super().__init__(document)
 
         self.func_format = QtGui.QTextCharFormat()
@@ -24,11 +35,17 @@ class StackTraceHighlighter(QtGui.QSyntaxHighlighter):
         self.info_format.setFontItalic(True)
 
     def highlightBlock(self, text):
+        """
+        Подсвечивает одну строку текста.
+
+        Qt вызывает этот метод отдельно для каждого блока/строки документа.
+        """
         if not text:
             return
 
         stripped = text.strip()
 
+        # Служебные сообщения не нужно парсить как stack frame.
         if (
             stripped.startswith("Загрузка")
             or stripped.startswith("Не удалось")
@@ -38,13 +55,17 @@ class StackTraceHighlighter(QtGui.QSyntaxHighlighter):
             self.setFormat(0, len(text), self.info_format)
             return
 
+        # Строка вида " 1. main.work" — это строка с функцией.
         if stripped and stripped[0].isdigit() and ". " in stripped:
             if stripped.startswith("1."):
+                # Первый кадр обычно самый интересный, слегка подсвечиваем его.
                 self.setFormat(0, len(text), self.first_frame_background)
             self.setFormat(0, len(text), self.func_format)
             return
 
         if text.startswith("    "):
+            # Строка с отступом — это путь к файлу.
+            # Если справа есть ":123", отдельно подсвечиваем номер строки.
             pos = text.rfind(":")
             if pos > 0 and text[pos + 1 :].strip().isdigit():
                 self.setFormat(0, pos, self.file_format)
