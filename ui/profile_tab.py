@@ -346,10 +346,7 @@ def format_series_header_html(func, inline):
     if not func:
         return '<span style="color:#777777; font-size:15px;">Серия не выбрана</span>'
 
-    blocks = []
-
-    blocks.append(
-        f"""
+    blocks = [f"""
         <div style="
             font-size: 22px;
             font-weight: 700;
@@ -358,8 +355,7 @@ def format_series_header_html(func, inline):
         ">
             {escape(func)}
         </div>
-        """
-    )
+        """]
 
     if inline:
         blocks.append(
