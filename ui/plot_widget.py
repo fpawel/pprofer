@@ -66,6 +66,7 @@ class PlotWidget(pg.PlotWidget):
         bottom_axis.setPen(pg.mkPen("k"))
 
         self.data = defaultdict(list)
+        self.series_stats = {}
         self.curves = {}
         self.series_colors = {}
         self.series_visible = {}
@@ -111,6 +112,22 @@ class PlotWidget(pg.PlotWidget):
 
     def add_point(self, key, ts, value, display_name=None, meta=None):
         self.data[key].append((ts, value))
+
+        stats = self.series_stats.get(key)
+        if stats is None:
+            self.series_stats[key] = {
+                "last": value,
+                "sum": value,
+                "count": 1,
+                "max": value,
+            }
+        else:
+            stats["last"] = value
+            stats["sum"] += value
+            stats["count"] += 1
+            if value > stats["max"]:
+                stats["max"] = value
+
         if key not in self.series_visible:
             self.series_visible[key] = True
         if display_name:
@@ -127,22 +144,20 @@ class PlotWidget(pg.PlotWidget):
             self.update_x_range()
 
     def series_score(self, key):
-        points = self.data.get(key)
-        if not points:
+        stats = self.series_stats.get(key)
+        if not stats or stats["count"] == 0:
             return 0
 
-        values = [v for _, v in points]
-
         if self.sort_mode == "last":
-            return values[-1]
+            return stats["last"]
 
         if self.sort_mode == "avg":
-            return sum(values) / len(values)
+            return stats["sum"] / stats["count"]
 
         if self.sort_mode == "max":
-            return max(values)
+            return stats["max"]
 
-        return values[-1]
+        return stats["last"]
 
     def top_series_keys(self):
         ranked = []

@@ -4,6 +4,7 @@ from PyQt5 import QtCore, QtWidgets
 
 from .profile_tab import ProfileTab
 from .sse import SseClient
+from .labels_fetch_thread import LabelsFetchThread
 
 PROFILES = [
     "heap",
@@ -45,6 +46,7 @@ class MainWindow(QtWidgets.QMainWindow):
         root_layout.addWidget(self.tabs)
 
         self.plots = {}
+        self.profile_tabs = {}
 
         max_visible_by_profile = {
             "heap": 10,
@@ -76,6 +78,7 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self.tabs.addTab(tab, profile)
             self.plots[profile] = tab.plot
+            self.profile_tabs[profile] = tab
 
         self.client = SseClient(base_url, PROFILES)
         self.client.event.connect(self.on_event)
@@ -84,6 +87,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.refresh)
         self.timer.start(1000)
+
+        self.labels_thread = None
+        self.labels_timer = QtCore.QTimer(self)
+        self.labels_timer.timeout.connect(self.fetch_labels)
+        self.labels_timer.start(1000)
+        self.fetch_labels()
 
     def on_event(self, ev):
         plot = self.plots.get(ev["_type"])
@@ -120,3 +129,28 @@ class MainWindow(QtWidgets.QMainWindow):
         self.client.stop()
         self.client.wait(2000)
         super().closeEvent(event)
+
+    def fetch_labels(self):
+        if self.labels_thread is not None and self.labels_thread.isRunning():
+            return
+
+        self.labels_thread = LabelsFetchThread(self.base_url, self)
+        self.labels_thread.loaded.connect(self.on_labels_loaded)
+        self.labels_thread.failed.connect(self.on_labels_failed)
+        self.labels_thread.finished.connect(self.on_labels_thread_finished)
+        self.labels_thread.start()
+
+    def on_labels_loaded(self, labels):
+        if not labels:
+            return
+
+        for tab in self.profile_tabs.values():
+            tab.set_labels(labels)
+
+        self.labels_timer.stop()
+
+    def on_labels_failed(self, _error):
+        pass
+
+    def on_labels_thread_finished(self):
+        self.labels_thread = None

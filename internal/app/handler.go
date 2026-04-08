@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"github.com/fpawel/pprofer/internal/httph/status"
 	"github.com/fpawel/pprofer/internal/pprof"
@@ -17,8 +18,9 @@ type Handler struct {
 	pprof.Client
 	Stacks *StackInfoProvider
 
-	profs   map[string]*profHandler
-	muProfs *sync.Mutex
+	profs            map[string]*profHandler
+	muProfs          *sync.Mutex
+	failedGetMetrics *int64
 }
 
 func NewHandler(pprofURL string) Handler {
@@ -34,7 +36,8 @@ func NewHandler(pprofURL string) Handler {
 				return append(topics, sse.DefaultTopic), true
 			},
 		},
-		Stacks: NewStackInfoProvider(),
+		Stacks:           NewStackInfoProvider(),
+		failedGetMetrics: new(int64),
 	}
 }
 
@@ -42,6 +45,20 @@ func (p Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err := p.serveHTTP(w, r); err != nil {
 		status.WriteError(w, err)
 	}
+}
+
+func (p Handler) GetMetrics(ctx context.Context, profileType string, seconds int) (*pprof.Metrics, error) {
+	metrics, err := p.Client.GetMetrics(ctx, profileType, seconds)
+	if err != nil {
+		if atomic.CompareAndSwapInt64(p.failedGetMetrics, 0, 1) {
+			slog.Error("Failed", "prof", profileType, "err", err.Error())
+		}
+	} else {
+		if atomic.CompareAndSwapInt64(p.failedGetMetrics, 1, 0) {
+			slog.Debug("Got metrics", "prof", profileType)
+		}
+	}
+	return metrics, err
 }
 
 func (p Handler) serveHTTP(w http.ResponseWriter, r *http.Request) error {
@@ -89,7 +106,7 @@ func (p Handler) startProf(profType string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	pp := &profHandler{
 		Server:        p.Server,
-		Client:        p.Client,
+		metricsClient: p,
 		profType:      profType,
 		cancelFunc:    cancel,
 		metricsFeeder: p.Stacks,

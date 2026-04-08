@@ -36,8 +36,14 @@ BACKEND_START_TIMEOUT="${BACKEND_START_TIMEOUT:-15}"
 
 BACKEND_URL="http://${BACKEND_ADDR}"
 BACK_PID=""
+UI_PID=""
 
 cleanup() {
+  if [[ -n "${UI_PID}" ]]; then
+    kill "${UI_PID}" 2>/dev/null || true
+    wait "${UI_PID}" 2>/dev/null || true
+  fi
+
   if [[ -n "${BACK_PID}" ]]; then
     echo
     echo "Stopping backend (pid=${BACK_PID})"
@@ -145,6 +151,14 @@ echo "  go main    : ${GO_MAIN}"
 echo "  listen addr: ${BACKEND_ADDR}"
 echo "  pprof url  : ${PPROF_URL}"
 
+BACKEND_PORT="${BACKEND_ADDR##*:}"
+
+if ss -ltn sport = :"${BACKEND_PORT}" | grep -q LISTEN; then
+  echo "error: backend address already in use: ${BACKEND_ADDR}" >&2
+  echo "hint: stop the existing process or choose another address" >&2
+  exit 1
+fi
+
 "${GO}" run "${GO_MAIN}" "${BACKEND_ADDR}" "${PPROF_URL}" &
 BACK_PID=$!
 
@@ -169,4 +183,7 @@ echo "Starting UI:"
 echo "  python main: ${UI_MAIN}"
 echo "  backend url: ${BACKEND_URL}"
 
-exec "${PYTHON}" "${UI_MAIN}" "${BACKEND_URL}"
+"${PYTHON}" "${UI_MAIN}" "${BACKEND_URL}" &
+UI_PID=$!
+
+wait "${UI_PID}"

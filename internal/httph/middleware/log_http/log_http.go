@@ -14,15 +14,7 @@ func Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log := slogctx.FromCtx(r.Context())
 
-		args := []any{
-			"method", r.Method,
-			"path", r.URL.Path,
-			"query", r.URL.RawQuery,
-			"header", r.Header,
-		}
-		if r.URL.RawQuery != "" {
-			args = append(args, "query", r.URL.RawQuery)
-		}
+		args := requestArgs(r)
 		log.With(args...).Debug("HTTP START ")
 
 		tmStart := time.Now()
@@ -42,7 +34,8 @@ func Middleware(next http.Handler) http.Handler {
 			logLevel = slog.LevelWarn
 		}
 
-		args = []any{"duration", time.Since(tmStart).String()}
+		args = append(requestArgs(r), "duration", time.Since(tmStart).String())
+
 		if lrw.wroteHeader {
 			args = append(args,
 				"status", status,
@@ -61,6 +54,17 @@ func Middleware(next http.Handler) http.Handler {
 
 		log.With(args...).Log(r.Context(), logLevel, "HTTP FINISH")
 	})
+}
+
+func requestArgs(r *http.Request) []any {
+	args := []any{
+		"method", r.Method,
+		"path", r.URL.Path,
+	}
+	if len(r.URL.Query()) != 0 {
+		args = append(args, "query", r.URL.Query())
+	}
+	return append(args, "header", r.Header)
 }
 
 type loggingResponseWriter struct {

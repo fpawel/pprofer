@@ -14,7 +14,9 @@ import (
 
 type profHandler struct {
 	*sse.Server
-	pprof.Client
+	metricsClient interface {
+		GetMetrics(ctx context.Context, profileType string, seconds int) (*pprof.Metrics, error)
+	}
 	profType      string
 	cancelFunc    context.CancelFunc
 	wg            sync.WaitGroup
@@ -49,7 +51,7 @@ func (h *profHandler) run(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			h.log.Error("Failed", "err", err.Error())
+			// ignore error, it was logged beyond
 		}
 		sleepCtx(ctx, profConfs[h.profType].Interval)
 	}
@@ -58,7 +60,7 @@ func (h *profHandler) run(ctx context.Context) {
 func (h *profHandler) handle(ctx context.Context) error {
 	settings := profConfs[h.profType]
 	eb := errorx.WithShortFunction()
-	metrics, err := h.Client.GetMetrics(ctx, h.profType, settings.Seconds)
+	metrics, err := h.metricsClient.GetMetrics(ctx, h.profType, settings.Seconds)
 	if err != nil {
 		return eb.WithFileLine().Wrap(err)
 	}

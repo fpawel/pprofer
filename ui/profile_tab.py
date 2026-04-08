@@ -5,7 +5,7 @@ from PyQt5 import QtWidgets, QtCore, QtGui
 from ui.plot_widget import PlotWidget
 from ui.series_list_widget import SeriesListWidget
 from ui.stack_fetch_thread import StackFetchThread
-from ui.stack_fetch_thred import StackTraceHighlighter
+from ui.stack_trace_highlighter import StackTraceHighlighter
 
 
 class ProfileTab(QtWidgets.QWidget):
@@ -35,6 +35,16 @@ class ProfileTab(QtWidgets.QWidget):
         self.sort_combo = QtWidgets.QComboBox()
         self.sort_combo.addItems(["last", "avg", "max"])
         controls_layout.addWidget(self.sort_combo)
+
+        self.labels_title = QtWidgets.QLabel("Labels:")
+        self.labels_title.setStyleSheet("font-weight: 600;")
+        controls_layout.addWidget(self.labels_title)
+
+        self.labels_value = QtWidgets.QLineEdit()
+        self.labels_value.setReadOnly(True)
+        self.labels_value.setPlaceholderText("Waiting for labels...")
+        self.labels_value.setMinimumWidth(320)
+        controls_layout.addWidget(self.labels_value, 1)
 
         controls_layout.addStretch()
         layout.addLayout(controls_layout)
@@ -120,6 +130,14 @@ class ProfileTab(QtWidgets.QWidget):
         self.sort_combo.currentTextChanged.connect(self.on_sort_changed)
         self.plot.manual_view_activated.connect(self._on_manual_view_activated)
         self.series_list.series_selected.connect(self.on_series_selected)
+
+    def set_labels(self, labels):
+        if not labels:
+            self.labels_value.clear()
+            self.labels_value.setPlaceholderText("Waiting for labels...")
+            return
+
+        self.labels_value.setText(", ".join(labels))
 
     def _on_manual_view_activated(self):
         self.follow_live_checkbox.blockSignals(True)

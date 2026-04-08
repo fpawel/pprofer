@@ -1,5 +1,5 @@
 from PyQt5 import QtCore
-from .stack_client import get_stack
+from .app_service_client import get_stack
 
 class StackFetchThread(QtCore.QThread):
     loaded = QtCore.pyqtSignal(int, object)
